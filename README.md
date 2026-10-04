@@ -1,9 +1,9 @@
 # Third Place Backend
 
 Backend API server for the Third Place immersive video platform (MV-HEVC / Apple Vision Pro).
-Spec: `~/Downloads/third-place-app-backend-server-specification-v1-FINAL.md`.
+Spec: [`third-place-app-backend-server-specification-v1-FINAL.md`](third-place-app-backend-server-specification-v1-FINAL.md).
 
-**Local development only for now — no git repo, nothing pushed anywhere.**
+**Local development only for now — not deployed anywhere yet.**
 
 ## Stack
 
@@ -15,9 +15,10 @@ TypeScript · Node.js (≥22) · Fastify · PostgreSQL 16 + Drizzle · Redis + B
 pnpm install
 cp .env.example .env
 colima start      # this Mac runs Docker via colima
-pnpm db:up        # starts Postgres (host port 5433) + Redis in Docker
+pnpm db:up        # starts Postgres (host port 5433), Redis and MinIO in Docker
 pnpm db:migrate   # applies src/db/migrations
 pnpm dev          # API on http://127.0.0.1:3000
+pnpm worker       # upload extraction worker (separate process)
 curl http://127.0.0.1:3000/healthz
 ```
 
@@ -29,8 +30,9 @@ Postgres maps to host port **5433** (a native Postgres occupies 5432 on this mac
 - `pnpm db:generate` diffs schema → new migration; **review the SQL before applying.**
 - Migration `0001` is hand-written (pg_trgm, generated tsvector `search` columns,
   `playback_events` monthly partitioning). Never ALTER `playback_events` via drizzle-kit.
-- Integration tests run only when `TEST_DATABASE_URL` is set:
-  `TEST_DATABASE_URL=postgres://tplace:tplace@localhost:5433/tplace TEST_REDIS_URL=redis://localhost:6379 pnpm test`
+- Integration tests run only when `TEST_DATABASE_URL` is set (upload tests also need
+  `TEST_REDIS_URL` and `TEST_S3_ENDPOINT`):
+  `TEST_DATABASE_URL=postgres://tplace:tplace@localhost:5433/tplace TEST_REDIS_URL=redis://localhost:6379 TEST_S3_ENDPOINT=http://127.0.0.1:9000 pnpm test`
 
 Checks: `pnpm typecheck` · `pnpm lint` · `pnpm test` · `pnpm api:lint`
 
@@ -55,16 +57,16 @@ src/
   index.ts          Entrypoint: env load, listen, graceful shutdown
   app.ts            Fastify app builder (used by tests via inject)
   config/env.ts     Zod-validated environment config — fails fast at boot
-  plugins/          Cross-cutting Fastify plugins (error handler; later: app-key gate, auth)
+  plugins/          Cross-cutting Fastify plugins (error handler, auth, app-key gate)
   routes/           Non-module routes (healthz)
-  lib/              Shared helpers (AppError + error catalog; later: tokens, R2, pagination)
+  lib/              Shared helpers (AppError + error catalog, pagination, R2 storage, ZIP/HLS validation)
   modules/          One folder per API domain — auth, account, catalog, media, uploads, metrics
   db/               Drizzle schema + migrations (step 3)
-  jobs/             BullMQ workers: ZIP extraction, janitor (step 6)
+  jobs/             BullMQ worker: ZIP extraction (janitor: step 8)
   cli/              Operator tooling, e.g. operator:create (step 4)
 edge-worker/        Cloudflare Worker: stream-token validation + playlist rewrite (step 7)
 openapi.yaml        The API contract, source of truth — repo root per spec §1 (step 2)
-test/               Vitest suites (app.inject, no network)
+test/               Vitest suites (unit + integration against the Docker services)
 ```
 
 ## Build steps (each reported before the next starts)
