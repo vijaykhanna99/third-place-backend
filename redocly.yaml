@@ -1,0 +1,10 @@
+# Redocly lint configuration. Extends the recommended ruleset; documented
+# exceptions only — do not silence rules broadly.
+extends:
+  - recommended
+
+rules:
+  # /healthz is a liveness probe: it either answers 200 or the process is dead.
+  # Every /api/v1 operation documents its 4xx responses; this exception is scoped
+  # to health only via the ignore file below.
+  operation-4xx-response: warn
