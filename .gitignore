@@ -1,0 +1,10 @@
+# For when git is initialized later — no repo yet by decision.
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+coverage/
+docs/api.html

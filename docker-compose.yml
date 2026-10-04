@@ -1,0 +1,69 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: tplace-postgres
+    environment:
+      POSTGRES_USER: tplace
+      POSTGRES_PASSWORD: tplace
+      POSTGRES_DB: tplace
+    ports:
+      # Host 5433: this Mac runs a native Postgres on 5432 — do not collide with it.
+      - "5433:5432"
+    volumes:
+      - tplace-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tplace -d tplace"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: tplace-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - tplace-redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Local stand-in for Cloudflare R2. R2 is S3-compatible, so the same client
+  # and presigning code works against both — only the endpoint differs.
+  minio:
+    image: minio/minio:latest
+    container_name: tplace-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: tplace
+      MINIO_ROOT_PASSWORD: tplace-secret
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - tplace-miniodata:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Creates the media bucket on first boot, then exits.
+  minio-init:
+    image: minio/mc:latest
+    container_name: tplace-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 tplace tplace-secret &&
+      mc mb --ignore-existing local/tplace-media-dev &&
+      echo 'bucket ready'"
+
+volumes:
+  tplace-pgdata:
+  tplace-redisdata:
+  tplace-miniodata:

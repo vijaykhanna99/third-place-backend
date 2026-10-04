@@ -1,0 +1,65 @@
+{
+  "name": "third-place-backend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Third Place immersive video platform — backend API server",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "argon2",
+      "esbuild"
+    ]
+  },
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src test",
+    "format": "prettier --write src test",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "cli": "tsx src/cli/index.ts",
+    "worker": "tsx src/jobs/worker.ts",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "tsx src/db/migrate.ts",
+    "api:lint": "redocly lint openapi.yaml",
+    "api:docs": "redocly build-docs openapi.yaml -o docs/api.html",
+    "mock": "prism mock openapi.yaml -p 4010",
+    "db:up": "docker-compose up -d",
+    "db:down": "docker-compose down"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1110.0",
+    "@aws-sdk/s3-request-presigner": "^3.1110.0",
+    "@fastify/multipart": "^10.1.0",
+    "argon2": "^0.45.1",
+    "bullmq": "^5.56.0",
+    "dotenv": "^16.5.0",
+    "drizzle-orm": "^0.44.2",
+    "fastify": "^5.4.0",
+    "image-size": "^2.0.2",
+    "ioredis": "^5.6.1",
+    "jose": "^6.2.8",
+    "postgres": "^3.4.7",
+    "uuidv7": "^1.2.1",
+    "yauzl": "^3.4.0",
+    "zod": "^3.25.67"
+  },
+  "devDependencies": {
+    "@redocly/cli": "^2.44.2",
+    "@stoplight/prism-cli": "^5.16.0",
+    "@types/node": "^22.15.0",
+    "@types/yauzl": "^3.4.0",
+    "drizzle-kit": "^0.31.1",
+    "eslint": "^9.29.0",
+    "prettier": "^3.5.3",
+    "tsx": "^4.20.3",
+    "typescript": "^5.8.3",
+    "typescript-eslint": "^8.34.1",
+    "vitest": "^3.2.4"
+  }
+}
