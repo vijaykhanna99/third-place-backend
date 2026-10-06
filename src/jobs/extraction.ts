@@ -4,18 +4,22 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pipeline } from "node:stream/promises";
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import yauzl from "yauzl";
 import type { Db } from "../db/client.js";
 import { uploads } from "../db/schema/index.js";
 import { isMasterPlaylist, parseMaster, parseMedia, resolveRelative } from "../lib/hls.js";
 import type { Storage } from "../lib/storage.js";
 import { ZIP_LIMITS, isRejection, planExtraction, type ZipEntryInfo } from "../lib/zip.js";
+import { mediaPrefixFor, tempKeyFor } from "./keys.js";
+import { DEFAULT_STUCK_AFTER_MS, MAX_RECOVERIES, STUCK_ERROR_CODE, isStuck } from "./recovery.js";
 
 export interface ExtractionDeps {
   db: Db;
   storage: Storage;
   log?: { info: (o: unknown, m?: string) => void; warn: (o: unknown, m?: string) => void };
+  /** Age after which a `processing` row counts as abandoned and may be reclaimed. */
+  stuckAfterMs?: number;
 }
 
 /**
@@ -28,15 +32,7 @@ export interface ProcessContext {
   maxAttempts?: number;
 }
 
-/** Temp key where the operator's presigned PUT lands (spec §8.1). */
-export function tempKeyFor(uploadId: string): string {
-  return `tmp/uploads/${uploadId}.zip`;
-}
-
-/** Published media prefix — keyed per upload (one upload = one camera angle). */
-export function mediaPrefixFor(uploadId: string): string {
-  return `media/uploads/${uploadId}`;
-}
+export { mediaPrefixFor, tempKeyFor };
 
 const CONTENT_TYPES: Record<string, string> = {
   ".m3u8": "application/vnd.apple.mpegurl",
@@ -148,20 +144,62 @@ export async function processUpload(
     log?.warn({ uploadId }, "extraction skipped: upload no longer exists");
     return;
   }
-  // Only queued work is processed; anything else is a duplicate delivery.
-  if (upload.status !== "queued") return;
+  // Only queued work is processed — plus a `processing` row whose worker
+  // evidently died, once it is older than the threshold. Anything else is a
+  // duplicate delivery.
+  const now = new Date();
+  const stuck =
+    upload.status === "processing" &&
+    isStuck(upload.processingStartedAt, deps.stuckAfterMs ?? DEFAULT_STUCK_AFTER_MS, now);
+  if (upload.status !== "queued" && !stuck) return;
 
-  // Atomic claim: the status predicate makes this a compare-and-swap, so two
-  // workers handed the same upload (duplicate delivery, stalled-job redispatch)
-  // can never both extract into the same prefix.
+  // Atomic claim: the predicates make this a compare-and-swap on exactly the
+  // row state we observed, so two workers handed the same upload (duplicate
+  // delivery, stalled-job redispatch) can never both extract into one prefix.
+  const observed = and(
+    eq(uploads.id, uploadId),
+    eq(uploads.status, upload.status),
+    upload.processingStartedAt === null
+      ? isNull(uploads.processingStartedAt)
+      : eq(uploads.processingStartedAt, upload.processingStartedAt),
+  );
+
+  if (stuck && upload.recoveryCount >= MAX_RECOVERIES) {
+    // Recovered too often already: whatever this archive does to a worker,
+    // it is not going to succeed. Fail it rather than loop.
+    const [failed] = await db
+      .update(uploads)
+      .set({
+        status: "failed",
+        error: `${STUCK_ERROR_CODE}: extraction did not complete after ${String(upload.recoveryCount)} recoveries`,
+      })
+      .where(observed)
+      .returning({ id: uploads.id });
+    if (failed) {
+      await storage.deletePrefix(mediaPrefixFor(uploadId));
+      log?.warn({ uploadId, recoveries: upload.recoveryCount }, "stuck upload failed");
+    }
+    return;
+  }
+
   const [claimed] = await db
     .update(uploads)
-    .set({ status: "processing", error: null })
-    .where(and(eq(uploads.id, uploadId), eq(uploads.status, "queued")))
+    .set({
+      status: "processing",
+      processingStartedAt: now,
+      error: null,
+      ...(stuck ? { recoveryCount: sql`${uploads.recoveryCount} + 1` } : {}),
+    })
+    .where(observed)
     .returning();
   if (!claimed) {
     log?.info({ uploadId }, "extraction skipped: claimed by another worker");
     return;
+  }
+  if (stuck) {
+    // The dead worker may have published part of the bundle; start clean.
+    log?.warn({ uploadId, recoveries: claimed.recoveryCount }, "reclaiming stuck upload");
+    await storage.deletePrefix(mediaPrefixFor(uploadId));
   }
 
   const tempKey = tempKeyFor(uploadId);

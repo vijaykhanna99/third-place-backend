@@ -56,6 +56,14 @@ const envSchema = z.object({
   STREAM_TOKEN_SECRET: optional(z.string().min(32)),
   STREAM_TOKEN_TTL_SEC: z.coerce.number().int().positive().default(900),
   MEDIA_BASE_URL: optional(z.string().url()),
+
+  // extraction worker (step 6.5)
+  /** A `processing` upload older than this is treated as abandoned and reclaimed. */
+  UPLOAD_STUCK_AFTER_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(30 * 60 * 1000),
 });
 
 export type Env = z.infer<typeof envSchema> & {

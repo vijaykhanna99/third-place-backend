@@ -1,7 +1,8 @@
 import { loadEnv } from "../config/env.js";
 import { createDb } from "../db/client.js";
 import { Storage, storageConfigFromEnv } from "../lib/storage.js";
-import { createExtractionWorker } from "./queue.js";
+import { createExtractionQueue, createExtractionWorker } from "./queue.js";
+import { recoverStuckUploads } from "./recovery.js";
 
 /**
  * Extraction worker entrypoint (`pnpm worker`). Separate process from the API:
@@ -18,21 +19,31 @@ if (!storageConfig) {
   process.exit(1);
 }
 
+const log = {
+  info: (o: unknown, m?: string) => {
+    console.log(JSON.stringify({ level: "info", msg: m, ...(o as object) }));
+  },
+  warn: (o: unknown, m?: string) => {
+    console.warn(JSON.stringify({ level: "warn", msg: m, ...(o as object) }));
+  },
+};
+
 const { sql, db } = createDb(env.DATABASE_URL);
 const storage = new Storage(storageConfig);
+const deps = { db, storage, log, stuckAfterMs: env.UPLOAD_STUCK_AFTER_MS };
 
-const worker = createExtractionWorker(env.REDIS_URL, {
-  db,
-  storage,
-  log: {
-    info: (o, m) => {
-      console.log(JSON.stringify({ level: "info", msg: m, ...(o as object) }));
-    },
-    warn: (o, m) => {
-      console.warn(JSON.stringify({ level: "warn", msg: m, ...(o as object) }));
-    },
-  },
+// Producer handle for re-enqueueing recovered uploads. A recovered upload gets
+// a fresh job id: the original id may still sit in the completed/failed sets,
+// where BullMQ would silently drop a duplicate.
+const { queue, connection: queueConnection } = createExtractionQueue(env.REDIS_URL);
+queueConnection.on("error", (err) => {
+  log.warn({ err: err.message }, "queue redis error");
 });
+const requeue = async (uploadId: string) => {
+  await queue.add("extract", { uploadId }, { jobId: `${uploadId}:recovery:${String(Date.now())}` });
+};
+
+const worker = createExtractionWorker(env.REDIS_URL, deps);
 
 worker.on("failed", (job, err) => {
   console.error(
@@ -40,11 +51,34 @@ worker.on("failed", (job, err) => {
   );
 });
 
-console.log(JSON.stringify({ level: "info", msg: "extraction worker started" }));
+/**
+ * Stuck-row sweep: at startup (a previous instance may have died mid-job) and
+ * periodically, so a row abandoned by another instance is not left waiting for
+ * the next restart.
+ */
+const sweep = async () => {
+  try {
+    const { requeued, failed } = await recoverStuckUploads(deps, {
+      stuckAfterMs: env.UPLOAD_STUCK_AFTER_MS,
+      enqueue: requeue,
+    });
+    if (requeued.length > 0 || failed.length > 0) {
+      log.info({ requeued, failed }, "stuck upload sweep");
+    }
+  } catch (err) {
+    log.warn({ err: err instanceof Error ? err.message : String(err) }, "stuck upload sweep failed");
+  }
+};
+await sweep();
+const sweepTimer = setInterval(() => void sweep(), Math.min(env.UPLOAD_STUCK_AFTER_MS, 5 * 60 * 1000));
+
+log.info({ stuckAfterMs: env.UPLOAD_STUCK_AFTER_MS }, "extraction worker started");
 
 const shutdown = async (signal: string) => {
-  console.log(JSON.stringify({ level: "info", msg: "shutting down", signal }));
+  log.info({ signal }, "shutting down");
+  clearInterval(sweepTimer);
   await worker.close();
+  await queue.close();
   await sql.end({ timeout: 5 });
   process.exit(0);
 };

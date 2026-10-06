@@ -6,6 +6,7 @@ import { buildApp } from "../src/app.js";
 import { AuthService } from "../src/modules/auth/service.js";
 import { Storage, storageConfigFromEnv, type StorageConfig } from "../src/lib/storage.js";
 import { processUpload, type ProcessContext } from "../src/jobs/extraction.js";
+import { MAX_RECOVERIES, recoverStuckUploads } from "../src/jobs/recovery.js";
 import { makeZip, type ZipInput } from "./helpers/zip-builder.js";
 
 /**
@@ -403,6 +404,93 @@ describe.runIf(Boolean(DB_URL && S3_ENDPOINT && REDIS_URL))("uploads integration
     expect(status.status).toBe("ready");
     expect(status.durationSec).toBe(12);
     expect(await storage.head(marker)).not.toBeNull();
+  });
+
+  /** Simulates a worker that died mid-extraction `ageMs` ago. */
+  async function strand(uploadID: string, ageMs: number, recoveryCount = 0) {
+    const startedAt = new Date(Date.now() - ageMs).toISOString();
+    await app.pgSql!`
+      UPDATE uploads SET status = 'processing', processing_started_at = ${startedAt}::timestamptz,
+        recovery_count = ${recoveryCount} WHERE id = ${uploadID}`;
+    // A half-published object the dead worker left behind.
+    await storage.put(`media/uploads/${uploadID}/uhd8k/stale.ts`, Buffer.from("stale"));
+  }
+
+  it("reclaims an upload stuck in processing, cleaning its prefix first", async () => {
+    const { uploadID } = await upload(makeZip(validBundle()));
+    await strand(uploadID, 60 * 60 * 1000);
+
+    await runWorker(uploadID);
+
+    const status = await statusOf(uploadID);
+    expect(status.status).toBe("ready");
+    expect(status.durationSec).toBe(12);
+    const keys = await storage.listPrefix(`media/uploads/${uploadID}`);
+    expect(keys).toHaveLength(6);
+    expect(keys).not.toContain(`media/uploads/${uploadID}/uhd8k/stale.ts`);
+    const [row] = await app.pgSql!`SELECT recovery_count FROM uploads WHERE id = ${uploadID}`;
+    expect(row!.recovery_count).toBe(1);
+  });
+
+  it("leaves a processing row within the threshold to its worker", async () => {
+    const { uploadID } = await upload(makeZip(validBundle()));
+    await strand(uploadID, 1000);
+
+    await runWorker(uploadID);
+
+    expect((await statusOf(uploadID)).status).toBe("processing");
+    // Nothing of the other worker's output was touched.
+    expect(await storage.head(`media/uploads/${uploadID}/uhd8k/stale.ts`)).not.toBeNull();
+  });
+
+  it("fails a stuck upload once it has been recovered too often", async () => {
+    const { uploadID } = await upload(makeZip(validBundle()));
+    await strand(uploadID, 60 * 60 * 1000, MAX_RECOVERIES);
+
+    await runWorker(uploadID);
+
+    const status = await statusOf(uploadID);
+    expect(status.status).toBe("failed");
+    expect(status.error).toContain("stuck_processing");
+    expect(await storage.listPrefix(`media/uploads/${uploadID}`)).toHaveLength(0);
+  });
+
+  it("sweeps stuck rows at startup: requeues the recoverable, fails the rest", async () => {
+    const a = (await upload(makeZip(validBundle()))).uploadID;
+    const b = (await upload(makeZip(validBundle()))).uploadID;
+    const fresh = (await upload(makeZip(validBundle()))).uploadID;
+    await strand(a, 60 * 60 * 1000);
+    await strand(b, 60 * 60 * 1000, MAX_RECOVERIES);
+    await strand(fresh, 1000);
+
+    const enqueued: string[] = [];
+    const result = await recoverStuckUploads(
+      { db: app.db!, storage },
+      {
+        enqueue: (id) => {
+          enqueued.push(id);
+          return Promise.resolve();
+        },
+      },
+    );
+
+    expect(result.requeued).toContain(a);
+    expect(result.failed).toContain(b);
+    expect(result.requeued).not.toContain(fresh);
+    expect(result.failed).not.toContain(fresh);
+    expect(enqueued).toEqual(result.requeued);
+
+    expect((await statusOf(a)).status).toBe("queued");
+    expect((await statusOf(b)).status).toBe("failed");
+    expect((await statusOf(fresh)).status).toBe("processing");
+    // Prefixes of swept rows are cleaned; the fresh one is untouched.
+    expect(await storage.listPrefix(`media/uploads/${a}`)).toHaveLength(0);
+    expect(await storage.listPrefix(`media/uploads/${b}`)).toHaveLength(0);
+    expect(await storage.listPrefix(`media/uploads/${fresh}`)).toHaveLength(1);
+
+    // The requeued upload then processes normally.
+    await runWorker(a);
+    expect((await statusOf(a)).status).toBe("ready");
   });
 
   it("hides other operators' uploads behind 404", async () => {

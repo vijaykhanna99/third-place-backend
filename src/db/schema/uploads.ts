@@ -27,6 +27,10 @@ export const uploads = pgTable(
     /** R2 key of the master playlist once extraction validates (spec §8.4). */
     playlistKey: text("playlist_key"),
     durationSec: integer("duration_sec"),
+    /** Set when a worker claims the row; a `processing` row older than the stuck threshold is reclaimable. */
+    processingStartedAt: timestamp("processing_started_at", { withTimezone: true }),
+    /** Times this upload was pulled back from a stuck `processing` state; capped so a crash loop ends in `failed`. */
+    recoveryCount: integer("recovery_count").notNull().default(0),
     createdBy: uuid("created_by")
       .notNull()
       .references(() => accounts.id),
