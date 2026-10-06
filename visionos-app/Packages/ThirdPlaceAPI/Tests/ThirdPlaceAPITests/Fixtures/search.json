@@ -1,0 +1,42 @@
+{
+  "query": "tokyo",
+  "total": 1,
+  "nextCursor": null,
+  "programs": [
+    {
+      "id": "01890a5d-ac96-774b-b111-000000000101",
+      "title": "Neon Nights — Immersive Live",
+      "description": "An immersive concert series captured in 8K stereoscopic MV-HEVC.",
+      "thumbnailURL": "https://media.3rd-place.example/thumbs/neon-nights.jpg",
+      "genre": [
+        {
+          "id": "01890a5d-ac96-774b-b111-000000000001",
+          "name": "Music"
+        }
+      ],
+      "matchedBy": "episode",
+      "episodes": [
+        {
+          "id": "01890a5d-ac96-774b-b111-000000000301",
+          "seasonNumber": 1,
+          "number": 1,
+          "title": "Opening Night — Tokyo",
+          "description": "The first night of the tour, captured from the front row.",
+          "durationSec": 5400,
+          "thumbnailURL": "https://media.3rd-place.example/thumbs/ep-s01e01.jpg",
+          "publishedAt": "2026-07-01T12:00:00Z"
+        },
+        {
+          "id": "01890a5d-ac96-774b-b111-000000000302",
+          "seasonNumber": 1,
+          "number": 2,
+          "title": "Second Night — Tokyo",
+          "description": "Deeper cuts and an acoustic interlude.",
+          "durationSec": 5820,
+          "thumbnailURL": "https://media.3rd-place.example/thumbs/ep-s01e02.jpg",
+          "publishedAt": "2026-07-08T12:00:00Z"
+        }
+      ]
+    }
+  ]
+}

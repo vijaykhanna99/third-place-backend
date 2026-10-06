@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "app_key_required",
+    "message": "Missing or invalid app key"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "genreID": "01890a5d-ac96-774b-b111-000000000001",
+  "total": 1,
+  "nextCursor": null,
+  "programs": [
+    {
+      "id": "01890a5d-ac96-774b-b111-000000000101",
+      "title": "Neon Nights — Immersive Live",
+      "description": "An immersive concert series captured in 8K stereoscopic MV-HEVC.",
+      "thumbnailURL": "https://media.3rd-place.example/thumbs/neon-nights.jpg",
+      "genre": [
+        {
+          "id": "01890a5d-ac96-774b-b111-000000000001",
+          "name": "Music"
+        }
+      ],
+      "updatedAt": "2026-08-01T10:00:00Z"
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+# Derived from project.yml by XcodeGen
+*.xcodeproj
+ThirdPlace/Info.plist
+*.xcworkspace
+xcuserdata/
+DerivedData/
+.build/
+.swiftpm/
+Package.resolved

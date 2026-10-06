@@ -107,6 +107,7 @@ src/
   jobs/             BullMQ worker: ZIP extraction + janitor sweep (see jobs/README.md)
   cli/              Operator tooling, e.g. operator:create (step 4)
 edge-worker/        Cloudflare Worker: stream-token validation, playlist token propagation, R2 origin (own package, see its README)
+visionos-app/       SwiftUI visionOS client: API package + catalog/player app (unverified: no Xcode in CI; see its README)
 openapi.yaml        The API contract, source of truth — repo root per spec §1 (step 2)
 test/               Vitest suites (unit + integration against the Docker services)
 ```
@@ -125,3 +126,4 @@ test/               Vitest suites (unit + integration against the Docker service
 | 6.5 | Upload pipeline review fixes: retryable extraction with atomic claims, stuck-upload recovery, streamed entries with per-entry caps, bounded shutdown and scratch hygiene, subtitle/I-frame/nested-master validation, contract fixes, test isolation, CI + container build | ✅ done |
 | 7 | Delivery: stream tokens, edge Worker, quality enum | ✅ done |
 | 8 | Metrics endpoint, janitor job, rate limiting, hardening pass (helmet, body limits, readiness probe) | ✅ done |
+| 9 | visionOS app: API client from the contract, browse/search/program/episode screens, immersive MV-HEVC player with angle switcher | code written, not compiled (no Xcode available) |

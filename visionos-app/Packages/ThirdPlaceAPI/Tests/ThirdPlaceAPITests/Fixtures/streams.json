@@ -1,0 +1,14 @@
+{
+  "episodeID": "01890a5d-ac96-774b-b111-000000000301",
+  "streams": [
+    {
+      "name": "Main",
+      "streamURL": "https://media.3rd-place.example/uploads/01890a5d-ac96-774b-b111-000000000801/index.m3u8?token=v1.tok301m.fresh"
+    },
+    {
+      "name": "Side",
+      "streamURL": "https://media.3rd-place.example/uploads/01890a5d-ac96-774b-b111-000000000802/index.m3u8?token=v1.tok301s.fresh"
+    }
+  ],
+  "expiresAt": "2026-08-06T04:35:00Z"
+}

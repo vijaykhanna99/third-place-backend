@@ -1,0 +1,63 @@
+# XcodeGen project spec — `brew install xcodegen && xcodegen generate` produces
+# ThirdPlace.xcodeproj. The project file itself is not committed: it is derived
+# from this spec and the sources, which keeps diffs reviewable.
+name: ThirdPlace
+options:
+  bundleIdPrefix: jp.co.3rd-place
+  deploymentTarget:
+    visionOS: "2.0"
+  xcodeVersion: "16.0"
+  createIntermediateGroups: true
+
+configs:
+  Debug: debug
+  Release: release
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    SWIFT_STRICT_CONCURRENCY: minimal
+    DEVELOPMENT_TEAM: ""           # set your team id, or sign manually in Xcode
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+
+packages:
+  ThirdPlaceAPI:
+    path: Packages/ThirdPlaceAPI
+
+targets:
+  ThirdPlace:
+    type: application
+    platform: visionOS
+    sources:
+      - path: ThirdPlace
+    dependencies:
+      - package: ThirdPlaceAPI
+    configFiles:
+      Debug: Config/Debug.xcconfig
+      Release: Config/Release.xcconfig
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: jp.co.3rd-place.ThirdPlace
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: ThirdPlace/Info.plist
+        TARGETED_DEVICE_FAMILY: "7"
+        SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD: NO
+    info:
+      path: ThirdPlace/Info.plist
+      properties:
+        CFBundleDisplayName: Third Place
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: true
+          UISceneConfigurations: {}
+        UIApplicationPreferredDefaultSceneSessionRole: UIWindowSceneSessionRoleApplication
+        # Build-time configuration, injected from the xcconfig files.
+        TPAPIBaseURL: $(API_BASE_URL)
+        TPAppKey: $(APP_KEY)
+        TPMediaOrigin: $(MEDIA_ORIGIN)
+        # Local development only: the API and MinIO run over plain HTTP on this
+        # Mac. Release builds talk HTTPS and never need this.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true

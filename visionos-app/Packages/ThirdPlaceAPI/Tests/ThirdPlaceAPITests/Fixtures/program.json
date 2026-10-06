@@ -1,0 +1,137 @@
+{
+  "id": "01890a5d-ac96-774b-b111-000000000101",
+  "title": "Neon Nights — Immersive Live",
+  "description": "An immersive concert series captured in 8K stereoscopic MV-HEVC.",
+  "thumbnailURL": "https://media.3rd-place.example/thumbs/neon-nights.jpg",
+  "genre": [
+    {
+      "id": "01890a5d-ac96-774b-b111-000000000001",
+      "name": "Music"
+    }
+  ],
+  "createdAt": "2026-06-01T09:00:00Z",
+  "updatedAt": "2026-08-01T10:00:00Z",
+  "viewCount": 1284,
+  "owner": {
+    "did": "did:tplace:01890a5d-ac96-774b-b111-00000000a002",
+    "handle": "third-place-official",
+    "displayName": "Third Place",
+    "avatarURL": "https://media.3rd-place.example/thumbs/avatar-tp.png"
+  },
+  "viewer": {
+    "isFollowing": false,
+    "isFavorited": false
+  },
+  "season": [
+    {
+      "id": "01890a5d-ac96-774b-b111-000000000201",
+      "number": 1,
+      "title": "World Tour 2026",
+      "description": "Six nights across three cities.",
+      "episodes": [
+        {
+          "id": "01890a5d-ac96-774b-b111-000000000301",
+          "number": 1,
+          "title": "Opening Night — Tokyo",
+          "description": "The first night of the tour, captured from the front row.",
+          "durationSec": 5400,
+          "thumbnailURL": "https://media.3rd-place.example/thumbs/ep-s01e01.jpg",
+          "streams": [
+            {
+              "name": "Main",
+              "streamURL": "https://media.3rd-place.example/uploads/01890a5d-ac96-774b-b111-000000000801/index.m3u8?token=v1.tok301m"
+            },
+            {
+              "name": "Side",
+              "streamURL": "https://media.3rd-place.example/uploads/01890a5d-ac96-774b-b111-000000000807/index.m3u8?token=v1.tok301s"
+            }
+          ],
+          "publishedAt": "2026-07-01T12:00:00Z"
+        },
+        {
+          "id": "01890a5d-ac96-774b-b111-000000000302",
+          "number": 2,
+          "title": "Second Night — Tokyo",
+          "description": "Deeper cuts and an acoustic interlude.",
+          "durationSec": 5820,
+          "thumbnailURL": "https://media.3rd-place.example/thumbs/ep-s01e02.jpg",
+          "streams": [
+            {
+              "name": "Main",
+              "streamURL": "https://media.3rd-place.example/uploads/01890a5d-ac96-774b-b111-000000000802/index.m3u8?token=v1.tok302m"
+            }
+          ],
+          "publishedAt": "2026-07-08T12:00:00Z"
+        },
+        {
+          "id": "01890a5d-ac96-774b-b111-000000000303",
+          "number": 3,
+          "title": "Osaka Underground",
+          "description": "A club-scale show with the crowd inches away.",
+          "durationSec": 4980,
+          "thumbnailURL": "https://media.3rd-place.example/thumbs/ep-s01e03.jpg",
+          "streams": [
+            {
+              "name": "Main",
+              "streamURL": "https://media.3rd-place.example/uploads/01890a5d-ac96-774b-b111-000000000803/index.m3u8?token=v1.tok303m"
+            }
+          ],
+          "publishedAt": "2026-07-15T12:00:00Z"
+        }
+      ]
+    },
+    {
+      "id": "01890a5d-ac96-774b-b111-000000000202",
+      "number": 2,
+      "title": "Studio Sessions",
+      "description": "Intimate studio performances in spatial audio.",
+      "episodes": [
+        {
+          "id": "01890a5d-ac96-774b-b111-000000000304",
+          "number": 1,
+          "title": "Session 001: Daybreak",
+          "description": "Sunrise session with strings.",
+          "durationSec": 2700,
+          "thumbnailURL": "https://media.3rd-place.example/thumbs/ep-s02e01.jpg",
+          "streams": [
+            {
+              "name": "Main",
+              "streamURL": "https://media.3rd-place.example/uploads/01890a5d-ac96-774b-b111-000000000804/index.m3u8?token=v1.tok304m"
+            }
+          ],
+          "publishedAt": "2026-07-22T12:00:00Z"
+        },
+        {
+          "id": "01890a5d-ac96-774b-b111-000000000305",
+          "number": 2,
+          "title": "Session 002: Midnight",
+          "description": "Late-night electronic set.",
+          "durationSec": 3120,
+          "thumbnailURL": "https://media.3rd-place.example/thumbs/ep-s02e02.jpg",
+          "streams": [
+            {
+              "name": "Main",
+              "streamURL": "https://media.3rd-place.example/uploads/01890a5d-ac96-774b-b111-000000000805/index.m3u8?token=v1.tok305m"
+            }
+          ],
+          "publishedAt": "2026-07-29T12:00:00Z"
+        },
+        {
+          "id": "01890a5d-ac96-774b-b111-000000000306",
+          "number": 3,
+          "title": "Session 003: Encore",
+          "description": "Requests from fans, performed live.",
+          "durationSec": 2880,
+          "thumbnailURL": "https://media.3rd-place.example/thumbs/ep-s02e03.jpg",
+          "streams": [
+            {
+              "name": "Main",
+              "streamURL": "https://media.3rd-place.example/uploads/01890a5d-ac96-774b-b111-000000000806/index.m3u8?token=v1.tok306m"
+            }
+          ],
+          "publishedAt": "2026-08-01T10:00:00Z"
+        }
+      ]
+    }
+  ]
+}

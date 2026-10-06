@@ -1,0 +1,11 @@
+{
+  "genres": [
+    {
+      "id": "01890a5d-ac96-774b-b111-000000000001",
+      "name": "Music",
+      "description": "Immersive live music experiences.",
+      "thumbnailURL": "https://media.3rd-place.example/thumbs/genre-music.jpg",
+      "programCount": 1
+    }
+  ]
+}

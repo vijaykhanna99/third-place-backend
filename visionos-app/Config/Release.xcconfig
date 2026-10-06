@@ -1,0 +1,4 @@
+// Production/staging: fill in before archiving. APP_KEY must be one of the API's APP_KEYS.
+API_BASE_URL = https:$()//api.3rd-place.co.jp
+APP_KEY = REPLACE_WITH_RELEASE_APP_KEY
+MEDIA_ORIGIN = https:$()//media.3rd-place.co.jp
