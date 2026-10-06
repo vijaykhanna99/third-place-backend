@@ -1610,6 +1610,10 @@ components:
             Infrastructure codes (start a new upload once the cause is fixed):
             `extraction_error`, `stuck_processing`, `no_worker`.
 
+            Janitor codes (spec §8.5; the upload's media has been removed):
+            `abandoned` (never completed within 7 days), `reclaimed` (ready but
+            not attached within 14 days, or detached from a deleted episode for 30 days).
+
   examples:
     ProgramFull:
       summary: Full program with 2 seasons / 6 episodes (canonical fixture)

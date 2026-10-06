@@ -2,8 +2,11 @@ import { Queue, Worker, type Job } from "bullmq";
 import type { Redis } from "ioredis";
 import { createQueueRedis } from "../db/redis.js";
 import { processUpload, type ExtractionDeps } from "./extraction.js";
+import { runJanitor, type JanitorDeps, type JanitorReport } from "./janitor.js";
 
 export const EXTRACTION_QUEUE = "upload-extraction";
+export const JANITOR_QUEUE = "janitor";
+export const JANITOR_SCHEDULER_ID = "janitor-sweep";
 
 export interface ExtractionJobData {
   uploadId: string;
@@ -66,4 +69,43 @@ export function createExtractionWorker(
       lockDuration: 10 * 60 * 1000,
     },
   );
+}
+
+/**
+ * Janitor schedule (step 8): one repeatable job every `everyMs`, upserted so a
+ * restart or a changed interval replaces the schedule instead of adding one.
+ * `everyMs` 0 removes any existing schedule.
+ */
+export async function scheduleJanitor(
+  redisUrl: string,
+  everyMs: number,
+  opts: QueueOptions = {},
+): Promise<{ queue: Queue; connection: Redis }> {
+  const connection = createQueueRedis(redisUrl);
+  const queue = new Queue(JANITOR_QUEUE, {
+    connection,
+    ...prefixOption(opts),
+    defaultJobOptions: { removeOnComplete: { count: 48 }, removeOnFail: { count: 48 } },
+  });
+  if (everyMs > 0) {
+    await queue.upsertJobScheduler(JANITOR_SCHEDULER_ID, { every: everyMs }, { name: "sweep" });
+  } else {
+    await queue.removeJobScheduler(JANITOR_SCHEDULER_ID);
+  }
+  return { queue, connection };
+}
+
+/** Janitor consumer: one sweep at a time, in the worker process. */
+export function createJanitorWorker(
+  redisUrl: string,
+  deps: JanitorDeps,
+  opts: QueueOptions = {},
+): Worker<Record<string, never>, JanitorReport> {
+  const connection = createQueueRedis(redisUrl);
+  return new Worker<Record<string, never>, JanitorReport>(JANITOR_QUEUE, () => runJanitor(deps), {
+    connection,
+    ...prefixOption(opts),
+    concurrency: 1,
+    lockDuration: 10 * 60 * 1000,
+  });
 }

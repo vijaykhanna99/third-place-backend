@@ -50,6 +50,15 @@ registered. Under `NODE_ENV=production` the API refuses to start unless `DATABAS
 `REDIS_URL`, `JWT_SIGNING_KEY`, `APP_KEYS`, `MEDIA_BASE_URL` and the `R2_*` set are present.
 The migrator, the operator CLI and the worker check only what they themselves need.
 
+`JANITOR_INTERVAL_MS` schedules the janitor in the worker process (default hourly, `0` to
+disable); `pnpm cli janitor:run` runs one sweep on demand. `QUEUE_PREFIX` namespaces the
+job queues' Redis keys.
+
+Health: `GET /healthz` is liveness (always 200 while the process runs; `degraded` on a
+dependency outage) and `GET /readyz` is readiness (503 until every configured dependency
+answers). Public reads are rate limited to 60 requests/minute per client IP (Redis-backed,
+`TRUSTED_PROXIES` decides which `X-Forwarded-For` hops to believe).
+
 `MEDIA_BASE_URL` is the public media origin. Storage keys carry a `media/` prefix
 (`media/uploads/{uploadID}/…`); public URLs do not (`/uploads/{uploadID}/…`). In production
 the edge Worker maps one onto the other; locally the base URL points at the bucket's
@@ -95,7 +104,7 @@ src/
   lib/              Shared helpers (AppError + error catalog, pagination, R2 storage, ZIP/HLS validation)
   modules/          One folder per API domain — auth, account, catalog, media, uploads, metrics
   db/               Drizzle schema + migrations (step 3)
-  jobs/             BullMQ worker: ZIP extraction (janitor: step 8)
+  jobs/             BullMQ worker: ZIP extraction + janitor sweep (see jobs/README.md)
   cli/              Operator tooling, e.g. operator:create (step 4)
 edge-worker/        Cloudflare Worker: stream-token validation, playlist token propagation, R2 origin (own package, see its README)
 openapi.yaml        The API contract, source of truth — repo root per spec §1 (step 2)
@@ -115,4 +124,4 @@ test/               Vitest suites (unit + integration against the Docker service
 | 6 | Uploads: presigned R2 flow, extraction worker + ZIP validation, thumbnails | ✅ done |
 | 6.5 | Upload pipeline review fixes: retryable extraction with atomic claims, stuck-upload recovery, streamed entries with per-entry caps, bounded shutdown and scratch hygiene, subtitle/I-frame/nested-master validation, contract fixes, test isolation, CI + container build | ✅ done |
 | 7 | Delivery: stream tokens, edge Worker, quality enum | ✅ done |
-| 8 | Metrics endpoint, janitor job, rate limiting, hardening pass | pending |
+| 8 | Metrics endpoint, janitor job, rate limiting, hardening pass (helmet, body limits, readiness probe) | ✅ done |

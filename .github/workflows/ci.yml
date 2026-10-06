@@ -77,6 +77,15 @@ jobs:
       - name: Tests (unit + integration)
         run: pnpm test
 
+      - name: Janitor runs end to end against the stack
+        run: pnpm cli janitor:run
+        env:
+          DATABASE_URL: ${{ env.TEST_DATABASE_URL }}
+          R2_ENDPOINT: ${{ env.TEST_S3_ENDPOINT }}
+          R2_ACCESS_KEY_ID: tplace
+          R2_SECRET_ACCESS_KEY: tplace-secret
+          R2_BUCKET_MEDIA: tplace-media-dev
+
       - run: pnpm build
 
   worker:

@@ -81,6 +81,12 @@ const envSchema = z.object({
     .int()
     .positive()
     .default(30 * 60 * 1000),
+  /** How often the worker runs the janitor sweep (step 8). 0 disables scheduling. */
+  JANITOR_INTERVAL_MS: z.coerce
+    .number()
+    .int()
+    .min(0)
+    .default(60 * 60 * 1000),
 });
 
 /**

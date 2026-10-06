@@ -1,6 +1,9 @@
 import { parseArgs } from "node:util";
 import { loadEnv } from "../config/env.js";
 import { createDb } from "../db/client.js";
+import { runJanitor } from "../jobs/janitor.js";
+import { scratchRoot } from "../jobs/lifecycle.js";
+import { Storage, storageConfigFromEnv } from "../lib/storage.js";
 import { AuthService } from "../modules/auth/service.js";
 import { generatePassword } from "../modules/auth/tokens.js";
 
@@ -19,9 +22,38 @@ const MIN_PASSWORD_LENGTH = 10;
 
 const HELP = `Usage:
   pnpm cli operator:create --handle <handle> --email <email> [--display-name <name>]
+  pnpm cli janitor:run
 
-  Set OPERATOR_PASSWORD to choose the password (min ${MIN_PASSWORD_LENGTH} chars);
-  otherwise a strong one is generated and printed once.`;
+  operator:create — set OPERATOR_PASSWORD to choose the password (min ${MIN_PASSWORD_LENGTH} chars);
+  otherwise a strong one is generated and printed once.
+  janitor:run — one janitor sweep now (spec §8.5), printing the report as JSON;
+  exits 1 if any rule failed. Needs DATABASE_URL and the R2_* storage settings.`;
+
+/** One janitor sweep on demand — the worker runs the same function on its schedule. */
+async function janitorRun(): Promise<void> {
+  const env = loadEnv({}, { strict: false });
+  const storageConfig = storageConfigFromEnv(env);
+  if (!env.DATABASE_URL || !storageConfig) {
+    console.error("janitor:run needs DATABASE_URL and the R2_* storage configuration");
+    process.exit(1);
+  }
+  const { sql, db } = createDb(env.DATABASE_URL);
+  try {
+    const report = await runJanitor({
+      db,
+      storage: new Storage(storageConfig),
+      scratchDir: scratchRoot(env.SCRATCH_DIR),
+      log: {
+        info: () => undefined,
+        warn: (o, m) => console.error(JSON.stringify({ level: "warn", msg: m, ...(o as object) })),
+      },
+    });
+    console.log(JSON.stringify(report, null, 2));
+    if (report.errors.length > 0) process.exitCode = 1;
+  } finally {
+    await sql.end({ timeout: 5 });
+  }
+}
 
 async function operatorCreate(argv: string[]): Promise<void> {
   let values;
@@ -95,6 +127,9 @@ const [command, ...rest] = process.argv.slice(2);
 switch (command) {
   case "operator:create":
     await operatorCreate(rest);
+    break;
+  case "janitor:run":
+    await janitorRun();
     break;
   case undefined:
   case "help":

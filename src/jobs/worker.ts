@@ -3,7 +3,7 @@ import { createDb } from "../db/client.js";
 import { attachRedisLogging } from "../db/redis.js";
 import { Storage, storageConfigFromEnv } from "../lib/storage.js";
 import { createShutdown, scratchRoot, sweepScratch } from "./lifecycle.js";
-import { createExtractionQueue, createExtractionWorker } from "./queue.js";
+import { createExtractionQueue, createExtractionWorker, createJanitorWorker, scheduleJanitor } from "./queue.js";
 import { recoverStuckUploads } from "./recovery.js";
 
 /**
@@ -70,6 +70,17 @@ worker.on("failed", (job, err) => {
   );
 });
 
+// Janitor (spec §8.5): scheduled here because this process already owns the
+// storage credentials and the scratch volume; the API never sweeps anything.
+const janitor = await scheduleJanitor(env.REDIS_URL, env.JANITOR_INTERVAL_MS, queueOptions);
+attachRedisLogging(janitor.connection, log, "janitor-queue");
+const janitorWorker = createJanitorWorker(env.REDIS_URL, { db, storage, log, scratchDir }, queueOptions);
+janitorWorker.on("failed", (job, err) => {
+  console.error(
+    JSON.stringify({ level: "error", msg: "janitor sweep failed", jobId: job?.id, err: err.message }),
+  );
+});
+
 /**
  * Stuck-row sweep: at startup (a previous instance may have died mid-job) and
  * periodically, so a row abandoned by another instance is not left waiting for
@@ -95,6 +106,7 @@ log.info(
   {
     scratchDir,
     queuePrefix: env.QUEUE_PREFIX ?? "bull",
+    janitorIntervalMs: env.JANITOR_INTERVAL_MS,
     stuckAfterMs: env.UPLOAD_STUCK_AFTER_MS,
     maxEntryBytes: env.UPLOAD_MAX_ENTRY_BYTES,
     shutdownTimeoutMs: env.WORKER_SHUTDOWN_TIMEOUT_MS,
@@ -105,15 +117,22 @@ log.info(
 // In-flight jobs get WORKER_SHUTDOWN_TIMEOUT_MS to finish; after that the
 // close is forced (BullMQ's stalled-job detection hands the job to another
 // instance, and processUpload's finally still removes the scratch dir).
-const shutdown = createShutdown(worker, {
-  timeoutMs: env.WORKER_SHUTDOWN_TIMEOUT_MS,
-  log,
-  after: async () => {
-    clearInterval(sweepTimer);
-    await queue.close();
-    await sql.end({ timeout: 5 });
+const shutdown = createShutdown(
+  {
+    close: async (force) => {
+      await Promise.all([worker.close(force), janitorWorker.close(force)]);
+    },
   },
-});
+  {
+    timeoutMs: env.WORKER_SHUTDOWN_TIMEOUT_MS,
+    log,
+    after: async () => {
+      clearInterval(sweepTimer);
+      await Promise.all([queue.close(), janitor.queue.close()]);
+      await sql.end({ timeout: 5 });
+    },
+  },
+);
 const onSignal = (signal: string) => {
   void shutdown(signal).then((outcome) => process.exit(outcome === "graceful" ? 0 : 1));
 };
