@@ -33,8 +33,40 @@ Postgres maps to host port **5433** (a native Postgres occupies 5432 on this mac
 - Integration tests run only when `TEST_DATABASE_URL` is set (upload tests also need
   `TEST_REDIS_URL` and `TEST_S3_ENDPOINT`):
   `TEST_DATABASE_URL=postgres://tplace:tplace@localhost:5433/tplace TEST_REDIS_URL=redis://localhost:6379 TEST_S3_ENDPOINT=http://127.0.0.1:9000 pnpm test`
+- Integration tests clean up after themselves in foreign-key order and enqueue their
+  jobs under a private Redis key prefix (`QUEUE_PREFIX`), which they remove afterwards —
+  a `pnpm worker` running against the same Redis never sees test jobs.
+- Responses in the integration suites are validated against `openapi.yaml`
+  (`test/helpers/contract.ts`), so server/contract drift fails the build.
 
 Checks: `pnpm typecheck` · `pnpm lint` · `pnpm test` · `pnpm api:lint`
+
+## Configuration
+
+`src/config/env.ts` validates every variable at boot (see `.env.example`). In development
+and tests any dependency may be omitted and the routes that need it are simply not
+registered. Under `NODE_ENV=production` the API refuses to start unless `DATABASE_URL`,
+`REDIS_URL`, `JWT_SIGNING_KEY`, `APP_KEYS`, `MEDIA_BASE_URL` and the `R2_*` set are present.
+The migrator, the operator CLI and the worker check only what they themselves need.
+
+`MEDIA_BASE_URL` is the public media origin. Storage keys carry a `media/` prefix
+(`media/uploads/{uploadID}/…`); public URLs do not (`/uploads/{uploadID}/…`). In production
+the edge Worker maps one onto the other; locally the base URL points at the bucket's
+`media/` folder so the same public paths resolve directly against MinIO.
+
+## CI and container image
+
+- `.github/workflows/ci.yml` runs typecheck, lint, the contract lint, the full test
+  suite (Postgres and Redis as service containers, MinIO as a container step) and the
+  production build on every push and pull request, then builds the container image.
+- `Dockerfile` is a multi-stage build producing one image for the API and the worker:
+
+```bash
+docker build -t third-place-backend .
+docker run --env-file .env -p 3000:3000 third-place-backend                          # API
+docker run --env-file .env third-place-backend node dist/jobs/worker.js             # worker
+docker run --env-file .env third-place-backend node dist/db/migrate.js              # migrations
+```
 
 ## API contract
 
@@ -80,5 +112,6 @@ test/               Vitest suites (unit + integration against the Docker service
 | 5 | Catalog: programs/seasons/episodes/genres, search (Postgres FTS), app-key gate | ✅ done |
 | 5.5 | Client-review revisions: multi-angle `streams[]` per episode, episode thumbnails in detail, program `viewCount` | ✅ done |
 | 6 | Uploads: presigned R2 flow, extraction worker + ZIP validation, thumbnails | ✅ done |
+| 6.5 | Upload pipeline review fixes: retryable extraction with atomic claims, stuck-upload recovery, streamed entries with per-entry caps, bounded shutdown and scratch hygiene, subtitle/I-frame/nested-master validation, contract fixes, test isolation, CI + container build | ✅ done |
 | 7 | Delivery: stream tokens, edge Worker, quality enum | pending |
 | 8 | Metrics endpoint, janitor job, rate limiting, hardening pass | pending |
