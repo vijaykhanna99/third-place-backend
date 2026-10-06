@@ -1,0 +1,17 @@
+node_modules
+dist
+coverage
+docs
+.git
+.github
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+test
+edge-worker
+visionos-app
+deploy
+docker-compose.yml
+*.md

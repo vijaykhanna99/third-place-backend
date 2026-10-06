@@ -1,0 +1,117 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  TEST_DATABASE_URL: postgres://tplace:tplace@localhost:5432/tplace
+  TEST_REDIS_URL: redis://localhost:6379
+  TEST_S3_ENDPOINT: http://127.0.0.1:9000
+
+jobs:
+  checks:
+    name: Typecheck, lint, contract, tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: tplace
+          POSTGRES_PASSWORD: tplace
+          POSTGRES_DB: tplace
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U tplace -d tplace"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm typecheck
+      - run: pnpm lint
+      - run: pnpm api:lint
+
+      # MinIO stands in for R2, exactly as in docker-compose. It runs as a
+      # container step rather than a service because service containers cannot
+      # be given a command, and the minio image needs `server /data`.
+      - name: Start MinIO
+        run: |
+          docker run -d --name minio -p 9000:9000 \
+            -e MINIO_ROOT_USER=tplace -e MINIO_ROOT_PASSWORD=tplace-secret \
+            minio/minio server /data
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:9000/minio/health/live && break
+            sleep 1
+          done
+          docker run --rm --network host --entrypoint sh minio/mc -c \
+            "mc alias set local http://127.0.0.1:9000 tplace tplace-secret && mc mb --ignore-existing local/tplace-media-dev"
+
+      - name: Apply migrations
+        run: pnpm db:migrate
+        env:
+          DATABASE_URL: ${{ env.TEST_DATABASE_URL }}
+
+      - name: Tests (unit + integration)
+        run: pnpm test
+
+      - run: pnpm build
+
+  worker:
+    name: Edge Worker tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Enabled once the Worker lands (step 7): the job is a no-op until then.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Test edge-worker when present
+        run: |
+          if [ -f edge-worker/package.json ]; then
+            cd edge-worker && pnpm install --frozen-lockfile && pnpm test
+          else
+            echo "edge-worker has no package yet; skipping"
+          fi
+
+  image:
+    name: Container image builds
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: checks
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build (not pushed)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          tags: third-place-backend:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
