@@ -4,7 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pipeline } from "node:stream/promises";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import yauzl from "yauzl";
 import type { Db } from "../db/client.js";
 import { uploads } from "../db/schema/index.js";
@@ -16,6 +16,16 @@ export interface ExtractionDeps {
   db: Db;
   storage: Storage;
   log?: { info: (o: unknown, m?: string) => void; warn: (o: unknown, m?: string) => void };
+}
+
+/**
+ * Delivery context from the queue. `attempt` is 1-based; a transient failure
+ * before the last attempt leaves the row retryable, the last attempt marks it
+ * failed. Direct callers (tests, one-off tooling) get a single attempt.
+ */
+export interface ProcessContext {
+  attempt?: number;
+  maxAttempts?: number;
 }
 
 /** Temp key where the operator's presigned PUT lands (spec §8.1). */
@@ -121,20 +131,38 @@ function readEntryBuffer(zip: yauzl.ZipFile, entry: yauzl.Entry, limit: number):
  * Written as a plain function (not a BullMQ handler) so tests can drive it
  * directly with a real database and real storage, no queue involved.
  */
-export async function processUpload(deps: ExtractionDeps, uploadId: string): Promise<void> {
+export async function processUpload(
+  deps: ExtractionDeps,
+  uploadId: string,
+  ctx: ProcessContext = {},
+): Promise<void> {
   const { db, storage } = deps;
+  const attempt = ctx.attempt ?? 1;
+  const maxAttempts = ctx.maxAttempts ?? 1;
+  const log = deps.log;
 
   const [upload] = await db.select().from(uploads).where(eq(uploads.id, uploadId)).limit(1);
   if (!upload) {
     // The row was deleted between enqueue and pickup. Retrying cannot help, so
     // treat it as done rather than burning the retry budget on a 404.
-    deps.log?.warn({ uploadId }, "extraction skipped: upload no longer exists");
+    log?.warn({ uploadId }, "extraction skipped: upload no longer exists");
     return;
   }
   // Only queued work is processed; anything else is a duplicate delivery.
   if (upload.status !== "queued") return;
 
-  await db.update(uploads).set({ status: "processing" }).where(eq(uploads.id, uploadId));
+  // Atomic claim: the status predicate makes this a compare-and-swap, so two
+  // workers handed the same upload (duplicate delivery, stalled-job redispatch)
+  // can never both extract into the same prefix.
+  const [claimed] = await db
+    .update(uploads)
+    .set({ status: "processing", error: null })
+    .where(and(eq(uploads.id, uploadId), eq(uploads.status, "queued")))
+    .returning();
+  if (!claimed) {
+    log?.info({ uploadId }, "extraction skipped: claimed by another worker");
+    return;
+  }
 
   const tempKey = tempKeyFor(uploadId);
   const mediaPrefix = mediaPrefixFor(uploadId);
@@ -142,14 +170,41 @@ export async function processUpload(deps: ExtractionDeps, uploadId: string): Pro
   const localZip = join(scratch, "upload.zip");
   let zip: yauzl.ZipFile | undefined;
 
+  /**
+   * Terminal failure. The UPDATE is conditional on the row still being ours
+   * (`processing`): a row another worker has since published as `ready` is
+   * never downgraded, and its objects are never touched.
+   */
   const fail = async (code: string, message: string): Promise<void> => {
-    // Nothing half-published: remove anything already written.
-    await storage.deletePrefix(mediaPrefix).catch(() => undefined);
-    await db
+    const [row] = await db
       .update(uploads)
       .set({ status: "failed", error: `${code}: ${message}` })
-      .where(eq(uploads.id, uploadId));
-    deps.log?.warn({ uploadId, code, message }, "upload extraction failed");
+      .where(and(eq(uploads.id, uploadId), eq(uploads.status, "processing")))
+      .returning({ id: uploads.id });
+    if (!row) {
+      log?.warn({ uploadId, code }, "upload no longer processing: failure not recorded");
+      return;
+    }
+    // Nothing half-published: remove anything already written. A rollback
+    // failure is logged — orphaned objects must never go unnoticed.
+    try {
+      await storage.deletePrefix(mediaPrefix);
+    } catch (err) {
+      log?.warn(
+        { uploadId, err: err instanceof Error ? err.message : String(err) },
+        "rollback failed: published objects may be orphaned",
+      );
+    }
+    log?.warn({ uploadId, code, message }, "upload extraction failed");
+  };
+
+  /** Hands the row back to the queue so the next delivery can claim it. */
+  const release = async (reason: string): Promise<void> => {
+    await db
+      .update(uploads)
+      .set({ status: "queued" })
+      .where(and(eq(uploads.id, uploadId), eq(uploads.status, "processing")));
+    log?.warn({ uploadId, attempt, maxAttempts, reason }, "transient extraction failure: retrying");
   };
 
   try {
@@ -250,8 +305,9 @@ export async function processUpload(deps: ExtractionDeps, uploadId: string): Pro
       if (durationSec === 0) durationSec = parsed.durationSec;
     }
 
-    // 5. Publish.
-    await db
+    // 5. Publish — conditional on still owning the row, for the same reason
+    //    fail() is.
+    const [published] = await db
       .update(uploads)
       .set({
         status: "ready",
@@ -259,12 +315,24 @@ export async function processUpload(deps: ExtractionDeps, uploadId: string): Pro
         durationSec,
         error: null,
       })
-      .where(eq(uploads.id, uploadId));
+      .where(and(eq(uploads.id, uploadId), eq(uploads.status, "processing")))
+      .returning({ id: uploads.id });
+    if (!published) {
+      log?.warn({ uploadId }, "upload no longer processing: result not published");
+      return;
+    }
 
     // The temp archive has served its purpose; failures keep theirs so an
-    // operator can investigate (the janitor sweeps them after 7 days).
-    await storage.delete([tempKey]).catch(() => undefined);
-    deps.log?.info({ uploadId, durationSec, files: written.size }, "upload ready");
+    // operator can investigate (expired temp objects are swept by the janitor, step 8).
+    try {
+      await storage.delete([tempKey]);
+    } catch (err) {
+      log?.warn(
+        { uploadId, err: err instanceof Error ? err.message : String(err) },
+        "temp archive not deleted",
+      );
+    }
+    log?.info({ uploadId, durationSec, files: written.size }, "upload ready");
   } catch (err) {
     if (err instanceof ExtractionError) {
       // A bad archive will never become good: record it and let the job
@@ -272,9 +340,21 @@ export async function processUpload(deps: ExtractionDeps, uploadId: string): Pro
       await fail(err.code, err.message);
       return;
     }
-    // Genuinely unexpected (storage, network, disk): fail the upload but
-    // rethrow so the queue retries.
-    await fail("extraction_error", err instanceof Error ? err.message : "Extraction failed");
+    // Genuinely unexpected (storage, network, disk). Before the last attempt
+    // the row goes back to `queued` so the retry can claim it; only the final
+    // attempt records the failure. Either way the error is rethrown so the
+    // queue sees the attempt fail — and a bookkeeping failure on a dead
+    // connection is logged rather than allowed to mask the original error.
+    const message = err instanceof Error ? err.message : "Extraction failed";
+    try {
+      if (attempt < maxAttempts) await release(message);
+      else await fail("extraction_error", message);
+    } catch (bookkeepingErr) {
+      log?.warn(
+        { uploadId, err: bookkeepingErr instanceof Error ? bookkeepingErr.message : String(bookkeepingErr) },
+        "could not record extraction failure",
+      );
+    }
     throw err;
   } finally {
     zip?.close();

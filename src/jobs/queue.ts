@@ -33,7 +33,11 @@ export function createExtractionWorker(redisUrl: string, deps: ExtractionDeps): 
   return new Worker<ExtractionJobData>(
     EXTRACTION_QUEUE,
     async (job: Job<ExtractionJobData>) => {
-      await processUpload(deps, job.data.uploadId);
+      // attemptsMade counts prior failures, so this delivery is attempt N+1.
+      await processUpload(deps, job.data.uploadId, {
+        attempt: job.attemptsMade + 1,
+        maxAttempts: job.opts.attempts ?? 1,
+      });
     },
     {
       connection,

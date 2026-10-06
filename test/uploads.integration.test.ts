@@ -4,8 +4,8 @@ import type { FastifyInstance } from "fastify";
 import { loadEnvFrom } from "../src/config/env.js";
 import { buildApp } from "../src/app.js";
 import { AuthService } from "../src/modules/auth/service.js";
-import { Storage, storageConfigFromEnv } from "../src/lib/storage.js";
-import { processUpload } from "../src/jobs/extraction.js";
+import { Storage, storageConfigFromEnv, type StorageConfig } from "../src/lib/storage.js";
+import { processUpload, type ProcessContext } from "../src/jobs/extraction.js";
 import { makeZip, type ZipInput } from "./helpers/zip-builder.js";
 
 /**
@@ -55,6 +55,28 @@ function validBundle(): ZipInput[] {
     { path: "subtitles/ja/subtitle.m3u8", content: SUBS },
     { path: "subtitles/ja/seg-00001.vtt", content: "WEBVTT\n\n00:00.000 --> 00:06.000\nhello\n" },
   ];
+}
+
+/**
+ * Storage whose first `failures` downloads throw — a stand-in for a storage
+ * outage, which must be retried rather than failing the upload.
+ */
+class FlakyStorage extends Storage {
+  constructor(
+    config: StorageConfig,
+    private failures: number,
+    private readonly gate: Promise<void> = Promise.resolve(),
+  ) {
+    super(config);
+  }
+  override async getStream(key: string) {
+    await this.gate;
+    if (this.failures > 0) {
+      this.failures -= 1;
+      throw new Error("simulated storage outage");
+    }
+    return super.getStream(key);
+  }
 }
 
 /** 1x1 PNG. */
@@ -162,8 +184,8 @@ describe.runIf(Boolean(DB_URL && S3_ENDPOINT && REDIS_URL))("uploads integration
     return { uploadID, complete };
   }
 
-  const runWorker = (uploadId: string) =>
-    processUpload({ db: app.db!, storage }, uploadId);
+  const runWorker = (uploadId: string, ctx: ProcessContext = {}, store: Storage = storage) =>
+    processUpload({ db: app.db!, storage: store }, uploadId, ctx);
 
   const statusOf = async (uploadID: string) =>
     (
@@ -316,6 +338,71 @@ describe.runIf(Boolean(DB_URL && S3_ENDPOINT && REDIS_URL))("uploads integration
     const after = await statusOf(uploadID);
     expect(after.status).toBe("ready");
     expect(after.durationSec).toBe(12);
+  });
+
+  it("leaves a transiently failed upload retryable, then succeeds on the retry", async () => {
+    const { uploadID } = await upload(makeZip(validBundle()));
+    const flaky = new FlakyStorage(storageConfigFromEnv(app.env)!, 1);
+
+    // Attempt 1 of 3 hits an outage: the error propagates (so the queue
+    // counts the attempt) and the row goes back to `queued`, not `failed`.
+    await expect(runWorker(uploadID, { attempt: 1, maxAttempts: 3 }, flaky)).rejects.toThrow(
+      /simulated storage outage/,
+    );
+    expect((await statusOf(uploadID)).status).toBe("queued");
+
+    // Attempt 2 claims the row again and completes normally.
+    await runWorker(uploadID, { attempt: 2, maxAttempts: 3 }, flaky);
+    const status = await statusOf(uploadID);
+    expect(status.status).toBe("ready");
+    expect(status.durationSec).toBe(12);
+  });
+
+  it("records the failure only on the final attempt", async () => {
+    const { uploadID } = await upload(makeZip(validBundle()));
+    const flaky = new FlakyStorage(storageConfigFromEnv(app.env)!, 99);
+
+    await expect(runWorker(uploadID, { attempt: 3, maxAttempts: 3 }, flaky)).rejects.toThrow();
+    const status = await statusOf(uploadID);
+    expect(status.status).toBe("failed");
+    expect(status.error).toContain("extraction_error");
+    expect(status.error).toContain("simulated storage outage");
+  });
+
+  it("lets exactly one of two concurrent workers claim an upload", async () => {
+    const { uploadID } = await upload(makeZip(validBundle()));
+    await Promise.all([runWorker(uploadID), runWorker(uploadID)]);
+
+    const status = await statusOf(uploadID);
+    expect(status.status).toBe("ready");
+    expect(status.durationSec).toBe(12);
+    // One extraction, one set of objects — nothing written twice or rolled back.
+    expect(await storage.listPrefix(`media/uploads/${uploadID}`)).toHaveLength(6);
+  });
+
+  it("never downgrades a row that became ready while a stale worker was still running", async () => {
+    const { uploadID } = await upload(makeZip(validBundle()));
+    let open!: () => void;
+    const gate = new Promise<void>((resolve) => (open = resolve));
+    // This worker claims the row, then stalls on the download and finally fails.
+    const stale = new FlakyStorage(storageConfigFromEnv(app.env)!, 99, gate);
+    const run = runWorker(uploadID, { attempt: 1, maxAttempts: 1 }, stale);
+
+    // Meanwhile the upload is recovered and published by someone else.
+    await new Promise((r) => setTimeout(r, 200));
+    expect((await statusOf(uploadID)).status).toBe("processing");
+    const marker = `media/uploads/${uploadID}/index.m3u8`;
+    await storage.put(marker, Buffer.from(MASTER));
+    await app.pgSql!`UPDATE uploads SET status = 'ready', playlist_key = ${marker}, duration_sec = 12 WHERE id = ${uploadID}`;
+
+    open();
+    await expect(run).rejects.toThrow(/simulated storage outage/);
+
+    // The stale worker's failure must not touch the published row or its objects.
+    const status = await statusOf(uploadID);
+    expect(status.status).toBe("ready");
+    expect(status.durationSec).toBe(12);
+    expect(await storage.head(marker)).not.toBeNull();
   });
 
   it("hides other operators' uploads behind 404", async () => {
