@@ -377,6 +377,89 @@ describe.runIf(Boolean(DB_URL && S3_ENDPOINT && REDIS_URL))("uploads integration
     expect(retry.json<{ status: string }>().status).toBe("queued");
   });
 
+  it("answers 503 from complete when storage is unreachable, not 'object missing'", async () => {
+    const zip = makeZip(validBundle());
+    const init = await app.inject({
+      method: "POST",
+      url: "/api/v1/uploads",
+      headers: authed,
+      payload: {
+        fileName: "bundle.zip",
+        byteSize: zip.length,
+        checksum: createHash("sha256").update(zip).digest("hex"),
+      },
+    });
+    const { uploadID } = init.json<{ uploadID: string }>();
+    const [acct] = await app.pgSql!`SELECT id FROM accounts WHERE handle = ${OP}`;
+
+    // Nothing listens on port 9: every storage call fails without a 404.
+    const dead = new Storage({ ...storageConfigFromEnv(app.env)!, endpoint: "http://127.0.0.1:9" });
+    const service = new UploadService(app.db!, dead, () => Promise.resolve(), "", {
+      warn: () => undefined,
+    });
+    const err: unknown = await service
+      .complete(acct!.id as string, uploadID)
+      .then(() => null, (e: unknown) => e);
+    expect(err).toBeInstanceOf(AppError);
+    expect((err as AppError).statusCode).toBe(503);
+    expect((err as AppError).code).toBe("service_unavailable");
+    // The row is untouched: once storage is back, complete works normally.
+    expect((await statusOf(uploadID)).status).toBe("uploading");
+  }, 60_000);
+
+  it("reports a zero-length first variant as 0, not the subtitle track's duration", async () => {
+    const tiny = "#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXTINF:0.3,\nsegment-00001.ts\n#EXT-X-ENDLIST\n";
+    const zip = makeZip(
+      validBundle()
+        .filter((f) => f.path !== "uhd8k/segment-00002.ts")
+        .map((f) => (f.path === "uhd8k/playlist.m3u8" ? { ...f, content: tiny } : f)),
+    );
+    const { uploadID } = await upload(zip);
+    await runWorker(uploadID);
+    const status = await statusOf(uploadID);
+    expect(status.status).toBe("ready");
+    expect(status.durationSec).toBe(0);
+  });
+
+  describe("rendition agreement", () => {
+    const twoVariants = (secondMedia: string): ZipInput[] => [
+      {
+        path: "index.m3u8",
+        content: `#EXTM3U
+#EXT-X-STREAM-INF:BANDWIDTH=48000000,RESOLUTION=7680x4320
+uhd8k/playlist.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=16000000,RESOLUTION=3840x2160
+uhd4k/playlist.m3u8
+`,
+      },
+      { path: "uhd8k/playlist.m3u8", content: MEDIA },
+      { path: "uhd8k/segment-00001.ts", content: "a" },
+      { path: "uhd8k/segment-00002.ts", content: "b" },
+      { path: "uhd4k/playlist.m3u8", content: secondMedia },
+      { path: "uhd4k/segment-00001.ts", content: "c" },
+    ];
+
+    it("rejects renditions whose durations disagree beyond the tolerance", async () => {
+      const truncated = "#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:6.0,\nsegment-00001.ts\n#EXT-X-ENDLIST\n";
+      const { uploadID } = await upload(makeZip(twoVariants(truncated)));
+      await runWorker(uploadID);
+      const status = await statusOf(uploadID);
+      expect(status.status).toBe("failed");
+      expect(status.error).toContain("rendition_duration_mismatch");
+      expect(await storage.listPrefix(`media/uploads/${uploadID}`)).toHaveLength(0);
+    });
+
+    it("tolerates small encoder drift between renditions", async () => {
+      const drifted = "#EXTM3U\n#EXT-X-TARGETDURATION:14\n#EXTINF:13.5,\nsegment-00001.ts\n#EXT-X-ENDLIST\n";
+      const { uploadID } = await upload(makeZip(twoVariants(drifted)));
+      await runWorker(uploadID);
+      const status = await statusOf(uploadID);
+      expect(status.status).toBe("ready");
+      // The first variant is authoritative for the reported duration.
+      expect(status.durationSec).toBe(12);
+    });
+  });
+
   it("processes each upload once — re-running the worker is a no-op", async () => {
     const zip = makeZip(validBundle());
     const { uploadID } = await upload(zip);

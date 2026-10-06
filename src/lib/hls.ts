@@ -18,8 +18,10 @@ export interface MediaPlaylist {
   segments: string[];
   /** EXT-X-MAP init-segment URIs. */
   initSegments: string[];
-  /** Sum of EXTINF durations, seconds. */
+  /** Sum of EXTINF durations, seconds, rounded to the integer the API reports. */
   durationSec: number;
+  /** The same sum unrounded, for comparing renditions against each other. */
+  exactDurationSec: number;
 }
 
 /** Extracts a quoted or bare attribute from an EXT-X tag line. */
@@ -80,7 +82,7 @@ export function parseMedia(text: string): MediaPlaylist {
       segments.push(line);
     }
   }
-  return { segments, initSegments, durationSec: Math.round(durationSec) };
+  return { segments, initSegments, durationSec: Math.round(durationSec), exactDurationSec: durationSec };
 }
 
 export function isMasterPlaylist(text: string): boolean {

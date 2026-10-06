@@ -87,7 +87,18 @@ export class UploadService {
     // Already past this stage → return current state rather than re-queueing.
     if (row.status !== "uploading") return this.toView(row);
 
-    const head = await this.storage.head(tempKeyFor(uploadId));
+    let head: { size: number } | null;
+    try {
+      head = await this.storage.head(tempKeyFor(uploadId));
+    } catch (err) {
+      // Storage is down or misconfigured. That is our problem, not a missing
+      // upload: say so with a retryable status instead of a 400.
+      this.log?.warn(
+        { uploadId, err: err instanceof Error ? err.message : String(err) },
+        "storage head failed during complete",
+      );
+      throw errors.unavailable("Object storage is unavailable; call complete again later");
+    }
     if (!head) {
       throw errors.validationFailed("No uploaded object found for this upload");
     }

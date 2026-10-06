@@ -59,6 +59,9 @@ function contentTypeFor(path: string): string {
   return (dot === -1 ? undefined : CONTENT_TYPES[path.slice(dot).toLowerCase()]) ?? "application/octet-stream";
 }
 
+/** Variant renditions may disagree on total duration by at most this much. */
+export const RENDITION_DURATION_TOLERANCE_SEC = 2;
+
 /** A rejection the operator caused: fail the upload, never retry it. */
 class ExtractionError extends Error {
   constructor(
@@ -459,23 +462,29 @@ export async function processUpload(
       return;
     }
 
-    const referenced: { from: string; uri: string }[] = [
-      ...master.variants.map((uri) => ({ from: plan.masterPath, uri })),
-      ...master.media.map((m) => ({ from: plan.masterPath, uri: m.uri })),
+    // Variants are the quality renditions of one stream; media entries are
+    // the alternates (subtitles) attached to them. Both must resolve; only
+    // variants take part in the duration agreement below.
+    const referenced: { from: string; uri: string; variant: boolean }[] = [
+      ...master.variants.map((uri) => ({ from: plan.masterPath, uri, variant: true })),
+      ...master.media.map((m) => ({ from: plan.masterPath, uri: m.uri, variant: false })),
     ];
 
-    const mediaPlaylistPaths: string[] = [];
-    for (const { from, uri } of referenced) {
+    const mediaPlaylistPaths: { path: string; variant: boolean }[] = [];
+    for (const { from, uri, variant } of referenced) {
       const target = resolveRelative(from, uri);
       if (target === null || !planned.has(target)) {
         await fail("missing_reference", `Master playlist references a missing file: ${uri}`);
         return;
       }
-      if (target.endsWith(".m3u8")) mediaPlaylistPaths.push(target);
+      if (target.endsWith(".m3u8")) mediaPlaylistPaths.push({ path: target, variant });
     }
 
-    let durationSec = 0;
-    for (const playlistPath of mediaPlaylistPaths) {
+    // `undefined` until the first variant is seen — 0 is a legitimate parse
+    // result and must not be mistaken for "not set yet".
+    let durationSec: number | undefined;
+    let referenceDuration: { path: string; exactSec: number } | undefined;
+    for (const { path: playlistPath, variant } of mediaPlaylistPaths) {
       const text = playlists.get(playlistPath);
       if (text === undefined) {
         await fail("missing_reference", `Referenced playlist is missing: ${playlistPath}`);
@@ -493,9 +502,25 @@ export async function processUpload(
           return;
         }
       }
-      // Duration comes from the first variant; renditions of one stream all
-      // describe the same wall-clock content.
-      if (durationSec === 0) durationSec = parsed.durationSec;
+      if (!variant) continue;
+      // Renditions of one stream describe the same wall-clock content: a
+      // variant that stops short would play fine until the switch, then end.
+      if (referenceDuration === undefined) {
+        referenceDuration = { path: playlistPath, exactSec: parsed.exactDurationSec };
+        durationSec = parsed.durationSec;
+      } else if (
+        Math.abs(parsed.exactDurationSec - referenceDuration.exactSec) > RENDITION_DURATION_TOLERANCE_SEC
+      ) {
+        await fail(
+          "rendition_duration_mismatch",
+          `${playlistPath} runs ${String(parsed.exactDurationSec)}s but ${referenceDuration.path} runs ${String(referenceDuration.exactSec)}s`,
+        );
+        return;
+      }
+    }
+    if (durationSec === undefined) {
+      await fail("invalid_master_playlist", "No variant playlist could be measured");
+      return;
     }
 
     // 5. Extract to storage. Text entries are already in memory; everything

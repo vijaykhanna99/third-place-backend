@@ -41,20 +41,44 @@ export function storageConfigFromEnv(env: Env): StorageConfig | null {
   };
 }
 
+/** Thrown when DeleteObjects reports per-key failures inside an HTTP 200. */
+export class StorageDeleteError extends Error {
+  constructor(readonly failures: { key: string; code: string; message: string }[]) {
+    super(
+      `${String(failures.length)} object(s) could not be deleted: ${failures
+        .slice(0, 5)
+        .map((f) => `${f.key} (${f.code}: ${f.message})`)
+        .join("; ")}`,
+    );
+    this.name = "StorageDeleteError";
+  }
+}
+
+function isNotFound(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const e = err as { name?: unknown; $metadata?: { httpStatusCode?: unknown } };
+  return e.name === "NotFound" || e.name === "NoSuchKey" || e.$metadata?.httpStatusCode === 404;
+}
+
 export class Storage {
   private readonly client: S3Client;
 
-  constructor(private readonly config: StorageConfig) {
-    this.client = new S3Client({
-      endpoint: config.endpoint,
-      region: config.region,
-      credentials: {
-        accessKeyId: config.accessKeyId,
-        secretAccessKey: config.secretAccessKey,
-      },
-      // R2 and MinIO both want path-style addressing.
-      forcePathStyle: true,
-    });
+  constructor(
+    private readonly config: StorageConfig,
+    client?: S3Client,
+  ) {
+    this.client =
+      client ??
+      new S3Client({
+        endpoint: config.endpoint,
+        region: config.region,
+        credentials: {
+          accessKeyId: config.accessKeyId,
+          secretAccessKey: config.secretAccessKey,
+        },
+        // R2 and MinIO both want path-style addressing.
+        forcePathStyle: true,
+      });
   }
 
   /** Presigned PUT so the operator uploads directly to storage (spec §8.1). */
@@ -70,14 +94,20 @@ export class Storage {
     );
   }
 
+  /**
+   * Null means the object does not exist. Any other failure (timeout,
+   * throttling, bad credentials, 5xx) is rethrown: during a storage incident
+   * callers must report "storage unavailable", never "your file is missing".
+   */
   async head(key: string): Promise<{ size: number } | null> {
     try {
       const res = await this.client.send(
         new HeadObjectCommand({ Bucket: this.config.bucket, Key: key }),
       );
       return { size: res.ContentLength ?? 0 };
-    } catch {
-      return null;
+    } catch (err) {
+      if (isNotFound(err)) return null;
+      throw err;
     }
   }
 
@@ -127,18 +157,28 @@ export class Storage {
     await upload.done();
   }
 
+  /**
+   * DeleteObjects answers HTTP 200 even when some keys failed, listing them in
+   * `Errors` — those are surfaced as a StorageDeleteError so a rollback that
+   * only half worked is never mistaken for a clean one.
+   */
   async delete(keys: string[]): Promise<void> {
+    const failures: StorageDeleteError["failures"] = [];
     // DeleteObjects caps at 1000 keys per call.
     for (let i = 0; i < keys.length; i += 1000) {
       const chunk = keys.slice(i, i + 1000);
       if (chunk.length === 0) continue;
-      await this.client.send(
+      const res = await this.client.send(
         new DeleteObjectsCommand({
           Bucket: this.config.bucket,
           Delete: { Objects: chunk.map((Key) => ({ Key })) },
         }),
       );
+      for (const e of res.Errors ?? []) {
+        failures.push({ key: e.Key ?? "?", code: e.Code ?? "?", message: e.Message ?? "" });
+      }
     }
+    if (failures.length > 0) throw new StorageDeleteError(failures);
   }
 
   async listPrefix(prefix: string): Promise<string[]> {
