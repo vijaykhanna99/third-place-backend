@@ -2,6 +2,7 @@ import { loadEnv } from "../config/env.js";
 import { createDb } from "../db/client.js";
 import { attachRedisLogging } from "../db/redis.js";
 import { Storage, storageConfigFromEnv } from "../lib/storage.js";
+import { createShutdown, scratchRoot, sweepScratch } from "./lifecycle.js";
 import { createExtractionQueue, createExtractionWorker } from "./queue.js";
 import { recoverStuckUploads } from "./recovery.js";
 
@@ -36,13 +37,19 @@ const log = {
 
 const { sql, db } = createDb(env.DATABASE_URL);
 const storage = new Storage(storageConfig);
+const scratchDir = scratchRoot(env.SCRATCH_DIR);
 const deps = {
   db,
   storage,
   log,
   stuckAfterMs: env.UPLOAD_STUCK_AFTER_MS,
   limits: { maxEntryBytes: env.UPLOAD_MAX_ENTRY_BYTES },
+  scratchDir,
 };
+
+// A previous instance that died mid-job left its archive on disk; clear it
+// before taking work so a crash loop cannot fill the volume.
+await sweepScratch(scratchDir, log);
 
 // Producer handle for re-enqueueing recovered uploads. A recovered upload gets
 // a fresh job id: the original id may still sit in the completed/failed sets,
@@ -82,15 +89,30 @@ const sweep = async () => {
 await sweep();
 const sweepTimer = setInterval(() => void sweep(), Math.min(env.UPLOAD_STUCK_AFTER_MS, 5 * 60 * 1000));
 
-log.info({ stuckAfterMs: env.UPLOAD_STUCK_AFTER_MS }, "extraction worker started");
+log.info(
+  {
+    scratchDir,
+    stuckAfterMs: env.UPLOAD_STUCK_AFTER_MS,
+    maxEntryBytes: env.UPLOAD_MAX_ENTRY_BYTES,
+    shutdownTimeoutMs: env.WORKER_SHUTDOWN_TIMEOUT_MS,
+  },
+  "extraction worker started",
+);
 
-const shutdown = async (signal: string) => {
-  log.info({ signal }, "shutting down");
-  clearInterval(sweepTimer);
-  await worker.close();
-  await queue.close();
-  await sql.end({ timeout: 5 });
-  process.exit(0);
+// In-flight jobs get WORKER_SHUTDOWN_TIMEOUT_MS to finish; after that the
+// close is forced (BullMQ's stalled-job detection hands the job to another
+// instance, and processUpload's finally still removes the scratch dir).
+const shutdown = createShutdown(worker, {
+  timeoutMs: env.WORKER_SHUTDOWN_TIMEOUT_MS,
+  log,
+  after: async () => {
+    clearInterval(sweepTimer);
+    await queue.close();
+    await sql.end({ timeout: 5 });
+  },
+});
+const onSignal = (signal: string) => {
+  void shutdown(signal).then((outcome) => process.exit(outcome === "graceful" ? 0 : 1));
 };
-process.on("SIGINT", () => void shutdown("SIGINT"));
-process.on("SIGTERM", () => void shutdown("SIGTERM"));
+process.on("SIGINT", () => onSignal("SIGINT"));
+process.on("SIGTERM", () => onSignal("SIGTERM"));

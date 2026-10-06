@@ -58,6 +58,10 @@ const envSchema = z.object({
   MEDIA_BASE_URL: optional(z.string().url()),
 
   // extraction worker (step 6.5)
+  /** Where archives are downloaded during extraction. Defaults to the OS temp dir. */
+  SCRATCH_DIR: optional(z.string()),
+  /** How long the worker waits for in-flight jobs on SIGTERM before forcing the close. */
+  WORKER_SHUTDOWN_TIMEOUT_MS: z.coerce.number().int().positive().default(25_000),
   /** Per-entry uncompressed size cap inside an upload archive. */
   UPLOAD_MAX_ENTRY_BYTES: z.coerce
     .number()

@@ -1,4 +1,7 @@
 import { createHash } from "node:crypto";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { loadEnvFrom } from "../src/config/env.js";
@@ -537,6 +540,37 @@ describe.runIf(Boolean(DB_URL && S3_ENDPOINT && REDIS_URL))("uploads integration
     // The requeued upload then processes normally.
     await runWorker(a);
     expect((await statusOf(a)).status).toBe("ready");
+  });
+
+  it("uses the configured scratch root and leaves it clean afterwards", async () => {
+    const scratchDir = await mkdtemp(join(tmpdir(), "itest-scratch-"));
+    try {
+      const { uploadID } = await upload(makeZip(validBundle()));
+      await processUpload({ db: app.db!, storage, scratchDir }, uploadID);
+      expect((await statusOf(uploadID)).status).toBe("ready");
+      expect(await readdir(scratchDir)).toEqual([]);
+    } finally {
+      await rm(scratchDir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails clearly, and retryably, when the scratch root is unusable", async () => {
+    const { uploadID } = await upload(makeZip(validBundle()));
+    const scratchDir = join(tmpdir(), `itest-missing-${String(RUN)}`);
+
+    await expect(
+      processUpload({ db: app.db!, storage, scratchDir }, uploadID, { attempt: 1, maxAttempts: 3 }),
+    ).rejects.toThrow();
+    // An infrastructure problem, so the row is handed back for a retry...
+    expect((await statusOf(uploadID)).status).toBe("queued");
+
+    // ...and on the last attempt the operator sees what went wrong.
+    await expect(
+      processUpload({ db: app.db!, storage, scratchDir }, uploadID, { attempt: 3, maxAttempts: 3 }),
+    ).rejects.toThrow();
+    const status = await statusOf(uploadID);
+    expect(status.status).toBe("failed");
+    expect(status.error).toMatch(/extraction_error: .*itest-missing/);
   });
 
   describe("hostile archives", () => {

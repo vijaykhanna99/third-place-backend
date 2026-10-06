@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { createWriteStream } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Transform, type Readable, type TransformCallback } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -20,6 +19,7 @@ import {
   type ZipLimits,
 } from "../lib/zip.js";
 import { mediaPrefixFor, tempKeyFor } from "./keys.js";
+import { SCRATCH_PREFIX, ensureScratchSpace, scratchRoot } from "./lifecycle.js";
 import { DEFAULT_STUCK_AFTER_MS, MAX_RECOVERIES, STUCK_ERROR_CODE, isStuck } from "./recovery.js";
 
 export interface ExtractionDeps {
@@ -30,6 +30,8 @@ export interface ExtractionDeps {
   stuckAfterMs?: number;
   /** Overrides for the numeric archive limits (per-entry cap from env, smaller caps in tests). */
   limits?: Partial<ZipLimits>;
+  /** Root for per-upload scratch directories (env SCRATCH_DIR); defaults to the OS temp dir. */
+  scratchDir?: string;
 }
 
 /**
@@ -316,9 +318,6 @@ export async function processUpload(
   const limits: ZipLimits = { ...ZIP_LIMITS, ...deps.limits };
   const tempKey = tempKeyFor(uploadId);
   const mediaPrefix = mediaPrefixFor(uploadId);
-  const scratch = await mkdtemp(join(tmpdir(), `tplace-upload-${uploadId}-`));
-  const localZip = join(scratch, "upload.zip");
-  let zip: yauzl.ZipFile | undefined;
 
   /**
    * Terminal failure. The UPDATE is conditional on the row still being ours
@@ -348,14 +347,46 @@ export async function processUpload(
     log?.warn({ uploadId, code, message }, "upload extraction failed");
   };
 
-  /** Hands the row back to the queue so the next delivery can claim it. */
-  const release = async (reason: string): Promise<void> => {
-    await db
-      .update(uploads)
-      .set({ status: "queued" })
-      .where(and(eq(uploads.id, uploadId), eq(uploads.status, "processing")));
-    log?.warn({ uploadId, attempt, maxAttempts, reason }, "transient extraction failure: retrying");
+  /**
+   * Transient failure bookkeeping. Before the last attempt the row goes back
+   * to `queued` so the next delivery can claim it; on the last attempt the
+   * failure is recorded. A bookkeeping failure on a dead connection is logged
+   * rather than allowed to mask the original error.
+   */
+  const release = async (reason: string, retryable: boolean): Promise<void> => {
+    try {
+      if (retryable) {
+        await db
+          .update(uploads)
+          .set({ status: "queued" })
+          .where(and(eq(uploads.id, uploadId), eq(uploads.status, "processing")));
+        log?.warn({ uploadId, attempt, maxAttempts, reason }, "transient extraction failure: retrying");
+      } else {
+        await fail("extraction_error", reason);
+      }
+    } catch (bookkeepingErr) {
+      log?.warn(
+        { uploadId, err: bookkeepingErr instanceof Error ? bookkeepingErr.message : String(bookkeepingErr) },
+        "could not record extraction failure",
+      );
+    }
   };
+
+  // The archive is the only thing that touches disk (entries stream straight
+  // from it into storage), so the space check is for the declared byte size.
+  // Insufficient space is an infrastructure condition: a plain error, retried
+  // by the queue, and recorded verbatim should the last attempt still fail.
+  const root = scratchRoot(deps.scratchDir);
+  let scratch: string;
+  try {
+    await ensureScratchSpace(root, upload.byteSize);
+    scratch = await mkdtemp(join(root, `${SCRATCH_PREFIX}${uploadId}-`));
+  } catch (err) {
+    await release(err instanceof Error ? err.message : String(err), attempt < maxAttempts);
+    throw err;
+  }
+  const localZip = join(scratch, "upload.zip");
+  let zip: yauzl.ZipFile | undefined;
 
   try {
     // 1. Pull the archive down, verifying the operator-declared checksum as we
@@ -523,21 +554,10 @@ export async function processUpload(
       await fail(err.code, err.message);
       return;
     }
-    // Genuinely unexpected (storage, network, disk). Before the last attempt
-    // the row goes back to `queued` so the retry can claim it; only the final
-    // attempt records the failure. Either way the error is rethrown so the
-    // queue sees the attempt fail — and a bookkeeping failure on a dead
-    // connection is logged rather than allowed to mask the original error.
-    const message = err instanceof Error ? err.message : "Extraction failed";
-    try {
-      if (attempt < maxAttempts) await release(message);
-      else await fail("extraction_error", message);
-    } catch (bookkeepingErr) {
-      log?.warn(
-        { uploadId, err: bookkeepingErr instanceof Error ? bookkeepingErr.message : String(bookkeepingErr) },
-        "could not record extraction failure",
-      );
-    }
+    // Genuinely unexpected (storage, network, disk): hand the row back for
+    // the retry, or record the failure on the last attempt. Either way the
+    // error is rethrown so the queue sees the attempt fail.
+    await release(err instanceof Error ? err.message : "Extraction failed", attempt < maxAttempts);
     throw err;
   } finally {
     zip?.close();
