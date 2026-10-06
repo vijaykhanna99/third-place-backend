@@ -69,7 +69,7 @@ export function buildApp(env: Env): FastifyInstance {
   // Auth needs both a database and a signing key. Absent either (hermetic unit
   // tests, bare dev boot), the routes simply don't exist — /healthz still works.
   if (app.db && env.JWT_SIGNING_KEY) {
-    if (env.NODE_ENV === "production" && !env.REDIS_URL) {
+    if (!env.REDIS_URL) {
       app.log.warn(
         "login rate limiting is in-process only (REDIS_URL unset) — budgets are per-instance",
       );

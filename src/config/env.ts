@@ -6,8 +6,9 @@ import { z } from "zod";
  * malformed variable fails fast with a readable message instead of surfacing
  * as an undefined somewhere deep in a request handler.
  *
- * Variables for later steps (DB, auth, R2) are declared optional now and
- * tightened to required as each step wires them in.
+ * Every dependency is optional in development and tests so the app can boot
+ * with a subset of its routes; under NODE_ENV=production the full set is
+ * required (see PRODUCTION_REQUIRED below).
  */
 /** Treats empty-string env vars ("KEY=") as unset, so `.env` placeholders don't trip validation. */
 const optional = <T extends z.ZodTypeAny>(schema: T) =>
@@ -76,6 +77,44 @@ const envSchema = z.object({
     .default(30 * 60 * 1000),
 });
 
+/**
+ * Everything a production process needs to actually do its job. Development
+ * and tests may run with any subset (routes that lack their dependency are
+ * simply not registered); production must not boot half-configured and
+ * discover the gap on the first request.
+ */
+const PRODUCTION_REQUIRED = [
+  "DATABASE_URL",
+  "REDIS_URL",
+  "JWT_SIGNING_KEY",
+  "APP_KEYS",
+  "MEDIA_BASE_URL",
+  "R2_ACCESS_KEY_ID",
+  "R2_SECRET_ACCESS_KEY",
+  "R2_BUCKET_MEDIA",
+] as const;
+
+const strictEnvSchema = envSchema.superRefine((env, ctx) => {
+  if (env.NODE_ENV !== "production") return;
+  for (const key of PRODUCTION_REQUIRED) {
+    const value = env[key];
+    if (value === undefined || value.trim().length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [key],
+        message: "required when NODE_ENV=production",
+      });
+    }
+  }
+  if (!env.R2_ENDPOINT && !env.R2_ACCOUNT_ID) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["R2_ENDPOINT"],
+      message: "R2_ENDPOINT or R2_ACCOUNT_ID is required when NODE_ENV=production",
+    });
+  }
+});
+
 export type Env = z.infer<typeof envSchema> & {
   appKeys: string[];
   /** Fastify `trustProxy` value: hop count, CIDR list, or false. */
@@ -99,7 +138,7 @@ function parseTrustProxy(raw: string | undefined): number | string[] | false {
  * change test results.
  */
 export function loadEnvFrom(source: Record<string, string | undefined>): Env {
-  const parsed = envSchema.safeParse(source);
+  const parsed = strictEnvSchema.safeParse(source);
   if (!parsed.success) {
     const details = parsed.error.issues
       .map((i) => `  ${i.path.join(".")}: ${i.message}`)
