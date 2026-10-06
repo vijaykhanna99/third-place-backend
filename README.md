@@ -40,6 +40,7 @@ Postgres maps to host port **5433** (a native Postgres occupies 5432 on this mac
   (`test/helpers/contract.ts`), so server/contract drift fails the build.
 
 Checks: `pnpm typecheck` · `pnpm lint` · `pnpm test` · `pnpm api:lint`
+Edge Worker (separate package): `cd edge-worker && pnpm install && pnpm typecheck && pnpm test`
 
 ## Configuration
 
@@ -96,7 +97,7 @@ src/
   db/               Drizzle schema + migrations (step 3)
   jobs/             BullMQ worker: ZIP extraction (janitor: step 8)
   cli/              Operator tooling, e.g. operator:create (step 4)
-edge-worker/        Cloudflare Worker: stream-token validation + playlist rewrite (step 7)
+edge-worker/        Cloudflare Worker: stream-token validation, playlist token propagation, R2 origin (own package, see its README)
 openapi.yaml        The API contract, source of truth — repo root per spec §1 (step 2)
 test/               Vitest suites (unit + integration against the Docker services)
 ```
@@ -113,5 +114,5 @@ test/               Vitest suites (unit + integration against the Docker service
 | 5.5 | Client-review revisions: multi-angle `streams[]` per episode, episode thumbnails in detail, program `viewCount` | ✅ done |
 | 6 | Uploads: presigned R2 flow, extraction worker + ZIP validation, thumbnails | ✅ done |
 | 6.5 | Upload pipeline review fixes: retryable extraction with atomic claims, stuck-upload recovery, streamed entries with per-entry caps, bounded shutdown and scratch hygiene, subtitle/I-frame/nested-master validation, contract fixes, test isolation, CI + container build | ✅ done |
-| 7 | Delivery: stream tokens, edge Worker, quality enum | pending |
+| 7 | Delivery: stream tokens, edge Worker, quality enum | ✅ done |
 | 8 | Metrics endpoint, janitor job, rate limiting, hardening pass | pending |

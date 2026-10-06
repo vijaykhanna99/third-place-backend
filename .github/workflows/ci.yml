@@ -83,7 +83,6 @@ jobs:
     name: Edge Worker tests
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    # Enabled once the Worker lands (step 7): the job is a no-op until then.
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -91,13 +90,15 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-      - name: Test edge-worker when present
-        run: |
-          if [ -f edge-worker/package.json ]; then
-            cd edge-worker && pnpm install --frozen-lockfile && pnpm test
-          else
-            echo "edge-worker has no package yet; skipping"
-          fi
+      - run: pnpm install --frozen-lockfile
+        working-directory: edge-worker
+      - run: pnpm typecheck
+        working-directory: edge-worker
+      - run: pnpm test
+        working-directory: edge-worker
+      - name: Bundle (dry run, no deploy)
+        run: npx wrangler deploy --dry-run --outdir /tmp/worker-bundle
+        working-directory: edge-worker
 
   image:
     name: Container image builds

@@ -1,0 +1,46 @@
+# Third Place media edge Worker (spec §5.2, Decision D4).
+#
+#   pnpm dev                 # local dev server (uses a local R2 simulation)
+#   pnpm deploy:staging      # staging.media origin
+#   pnpm deploy              # production
+#
+# Secrets are never written here. Per environment:
+#   wrangler secret put STREAM_TOKEN_SECRET [--env staging]
+#   wrangler secret put STREAM_TOKEN_SECRET_PREVIOUS [--env staging]   (only during rotation)
+#   wrangler secret put APP_KEYS [--env staging]                        (only with REQUIRE_APP_KEY_FOR_PLAYLISTS)
+#
+# Routes/custom domains are set per environment below once DNS exists
+# (deploy/README.md). Until then the Worker answers on its workers.dev URL.
+
+name = "third-place-media"
+main = "src/index.ts"
+compatibility_date = "2026-06-01"
+
+[observability]
+enabled = true
+
+# Default (production) bindings.
+[[r2_buckets]]
+binding = "MEDIA"
+bucket_name = "tplace-media-prod"
+
+[vars]
+# Set to "true" to require X-App-Key on playlist requests (spec §2.2). Off by
+# default: AVPlayer fetches the master playlist itself and does not reliably
+# attach custom headers (Decision D5), so turning this on needs the client to
+# load playlists through its own URLSession or AVAssetResourceLoader.
+REQUIRE_APP_KEY_FOR_PLAYLISTS = "false"
+
+# routes = [{ pattern = "media.3rd-place.co.jp", custom_domain = true }]
+
+[env.staging]
+name = "third-place-media-staging"
+
+[[env.staging.r2_buckets]]
+binding = "MEDIA"
+bucket_name = "tplace-media-staging"
+
+[env.staging.vars]
+REQUIRE_APP_KEY_FOR_PLAYLISTS = "false"
+
+# routes = [{ pattern = "media-staging.3rd-place.co.jp", custom_domain = true }]
