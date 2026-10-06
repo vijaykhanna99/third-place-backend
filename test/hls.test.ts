@@ -44,6 +44,36 @@ describe("parseMaster", () => {
     const m = parseMaster("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\n#EXT-X-COMMENT\n");
     expect(m.variants).toEqual([]);
   });
+
+  it("keeps a variant whose URI follows a comment or tag line", () => {
+    const m = parseMaster(
+      "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\n# encoder note\n#EXT-X-SOMETHING:1\nhd/playlist.m3u8\n",
+    );
+    expect(m.variants).toEqual(["hd/playlist.m3u8"]);
+  });
+
+  it("does not let a later variant's URI satisfy an earlier variant without one", () => {
+    const m = parseMaster(
+      "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\n#EXT-X-STREAM-INF:BANDWIDTH=2\nhd/playlist.m3u8\n",
+    );
+    expect(m.variants).toEqual(["hd/playlist.m3u8"]);
+  });
+
+  it("extracts I-frame and session-data URIs as references", () => {
+    const m = parseMaster(
+      [
+        "#EXTM3U",
+        '#EXT-X-SESSION-DATA:DATA-ID="com.example.title",URI="meta/title.json"',
+        '#EXT-X-SESSION-DATA:DATA-ID="com.example.inline",VALUE="no uri here"',
+        '#EXT-X-I-FRAME-STREAM-INF:BANDWIDTH=100,URI="uhd8k/iframes.m3u8"',
+        "#EXT-X-STREAM-INF:BANDWIDTH=1",
+        "uhd8k/playlist.m3u8",
+      ].join("\n"),
+    );
+    expect(m.iframes).toEqual(["uhd8k/iframes.m3u8"]);
+    expect(m.sessionData).toEqual(["meta/title.json"]);
+    expect(m.variants).toEqual(["uhd8k/playlist.m3u8"]);
+  });
 });
 
 describe("parseMedia", () => {

@@ -482,11 +482,14 @@ export async function processUpload(
     }
 
     // Variants are the quality renditions of one stream; media entries are
-    // the alternates (subtitles) attached to them. Both must resolve; only
+    // the alternates (subtitles) attached to them; I-frame playlists drive
+    // scrubbing and session-data URIs are side files. All must resolve; only
     // variants take part in the duration agreement below.
     const referenced: { from: string; uri: string; variant: boolean }[] = [
       ...master.variants.map((uri) => ({ from: plan.masterPath, uri, variant: true })),
       ...master.media.map((m) => ({ from: plan.masterPath, uri: m.uri, variant: false })),
+      ...master.iframes.map((uri) => ({ from: plan.masterPath, uri, variant: false })),
+      ...master.sessionData.map((uri) => ({ from: plan.masterPath, uri, variant: false })),
     ];
 
     const mediaPlaylistPaths: { path: string; variant: boolean }[] = [];

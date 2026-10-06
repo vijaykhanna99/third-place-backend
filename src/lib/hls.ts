@@ -11,6 +11,10 @@ export interface MasterPlaylist {
   variants: string[];
   /** URIs from EXT-X-MEDIA (subtitles, alternate audio). */
   media: { uri: string; type: string; language: string | null }[];
+  /** URIs from EXT-X-I-FRAME-STREAM-INF (trick-play playlists). */
+  iframes: string[];
+  /** URIs from EXT-X-SESSION-DATA entries that point at a file. */
+  sessionData: string[];
 }
 
 export interface MediaPlaylist {
@@ -40,17 +44,30 @@ export function parseMaster(text: string): MasterPlaylist {
   const lines = text.split(/\r?\n/).map((l) => l.trim());
   const variants: string[] = [];
   const media: MasterPlaylist["media"] = [];
+  const iframes: string[] = [];
+  const sessionData: string[] = [];
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!;
     if (line.startsWith("#EXT-X-STREAM-INF")) {
-      // The URI is the next non-comment, non-empty line.
+      // The URI is the next non-empty line that is not a tag or comment. Tags
+      // and comments may sit between the two (RFC 8216 §4.3.4.2 only requires
+      // the URI to follow); another EXT-X-STREAM-INF means this one had none.
       for (let j = i + 1; j < lines.length; j++) {
         const next = lines[j]!;
         if (next.length === 0) continue;
-        if (isUriLine(next)) variants.push(next);
-        break;
+        if (next.startsWith("#EXT-X-STREAM-INF")) break;
+        if (isUriLine(next)) {
+          variants.push(next);
+          break;
+        }
       }
+    } else if (line.startsWith("#EXT-X-I-FRAME-STREAM-INF")) {
+      const uri = attr(line, "URI");
+      if (uri) iframes.push(uri);
+    } else if (line.startsWith("#EXT-X-SESSION-DATA")) {
+      const uri = attr(line, "URI");
+      if (uri) sessionData.push(uri);
     } else if (line.startsWith("#EXT-X-MEDIA")) {
       const uri = attr(line, "URI");
       if (uri) {
@@ -62,7 +79,7 @@ export function parseMaster(text: string): MasterPlaylist {
       }
     }
   }
-  return { variants, media };
+  return { variants, media, iframes, sessionData };
 }
 
 export function parseMedia(text: string): MediaPlaylist {

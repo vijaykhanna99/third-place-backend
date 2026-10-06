@@ -101,6 +101,38 @@ describe("planExtraction", () => {
     expect(isRejection(nested) && nested.code).toBe("missing_master_playlist");
   });
 
+  it("rejects a second master playlist below the root", () => {
+    const result = planExtraction([
+      ...validEntries(),
+      entry("angle-b/index.m3u8"),
+      entry("angle-b/hd/playlist.m3u8"),
+    ]);
+    expect(isRejection(result) && result.code).toBe("nested_master_playlist");
+    // The root master itself is the only index.m3u8 allowed, at any depth.
+    const deep = planExtraction([...validEntries(), entry("a/b/c/index.m3u8")]);
+    expect(isRejection(deep) && deep.code).toBe("nested_master_playlist");
+  });
+
+  it("rejects duplicate entry paths, including different spellings of one path", () => {
+    const literal = planExtraction([...validEntries(), entry("index.m3u8")]);
+    expect(isRejection(literal) && literal.code).toBe("duplicate_entry");
+    const spelled = planExtraction([...validEntries(), entry("./uhd8k//segment-00001.ts")]);
+    expect(isRejection(spelled) && spelled.code).toBe("duplicate_entry");
+  });
+
+  it("enforces the per-entry cap on declared sizes", () => {
+    const result = planExtraction(
+      [entry("index.m3u8"), entry("uhd8k/huge.ts", { uncompressedSize: 1025 })],
+      { ...ZIP_LIMITS, maxEntryBytes: 1024 },
+    );
+    expect(isRejection(result) && result.code).toBe("too_large");
+    const ok = planExtraction(
+      [entry("index.m3u8"), entry("uhd8k/fits.ts", { uncompressedSize: 1024 })],
+      { ...ZIP_LIMITS, maxEntryBytes: 1024 },
+    );
+    expect(isRejection(ok)).toBe(false);
+  });
+
   it("rejects an empty archive", () => {
     const result = planExtraction([entry("dir/")]);
     expect(isRejection(result) && result.code).toBe("empty_archive");

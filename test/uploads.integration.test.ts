@@ -505,6 +505,83 @@ uhd8k/playlist.m3u8
     });
   });
 
+  describe("master playlist references", () => {
+    it("fails when an I-frame playlist referenced by the master is missing", async () => {
+      const master = `#EXTM3U
+#EXT-X-I-FRAME-STREAM-INF:BANDWIDTH=100000,URI="uhd8k/iframes.m3u8"
+#EXT-X-STREAM-INF:BANDWIDTH=48000000,RESOLUTION=7680x4320
+uhd8k/playlist.m3u8
+`;
+      const zip = makeZip(
+        validBundle()
+          .filter((f) => !f.path.startsWith("subtitles/"))
+          .map((f) => (f.path === "index.m3u8" ? { ...f, content: master } : f)),
+      );
+      const { uploadID } = await upload(zip);
+      await runWorker(uploadID);
+      const status = await statusOf(uploadID);
+      expect(status.status).toBe("failed");
+      expect(status.error).toContain("missing_reference");
+      expect(status.error).toContain("iframes.m3u8");
+    });
+
+    it("validates the I-frame playlist's own segment references when it is present", async () => {
+      const master = `#EXTM3U
+#EXT-X-I-FRAME-STREAM-INF:BANDWIDTH=100000,URI="uhd8k/iframes.m3u8"
+#EXT-X-STREAM-INF:BANDWIDTH=48000000,RESOLUTION=7680x4320
+uhd8k/playlist.m3u8
+`;
+      const iframes = `#EXTM3U
+#EXT-X-TARGETDURATION:6
+#EXT-X-I-FRAMES-ONLY
+#EXTINF:6.0,
+#EXT-X-BYTERANGE:100@0
+segment-00001.ts
+#EXTINF:6.0,
+#EXT-X-BYTERANGE:100@0
+segment-00009.ts
+#EXT-X-ENDLIST
+`;
+      const zip = makeZip([
+        ...validBundle()
+          .filter((f) => !f.path.startsWith("subtitles/"))
+          .map((f) => (f.path === "index.m3u8" ? { ...f, content: master } : f)),
+        { path: "uhd8k/iframes.m3u8", content: iframes },
+      ]);
+      const { uploadID } = await upload(zip);
+      await runWorker(uploadID);
+      const status = await statusOf(uploadID);
+      expect(status.status).toBe("failed");
+      expect(status.error).toContain("segment-00009.ts");
+    });
+
+    it("accepts a comment line between EXT-X-STREAM-INF and its URI", async () => {
+      const master = `#EXTM3U
+#EXT-X-STREAM-INF:BANDWIDTH=48000000,RESOLUTION=7680x4320
+# produced by the encoder
+uhd8k/playlist.m3u8
+`;
+      const zip = makeZip(
+        validBundle()
+          .filter((f) => !f.path.startsWith("subtitles/"))
+          .map((f) => (f.path === "index.m3u8" ? { ...f, content: master } : f)),
+      );
+      const { uploadID } = await upload(zip);
+      await runWorker(uploadID);
+      expect((await statusOf(uploadID)).status).toBe("ready");
+    });
+
+    it("rejects a nested index.m3u8 (one upload is one angle)", async () => {
+      const zip = makeZip([...validBundle(), { path: "angle-b/index.m3u8", content: MASTER }]);
+      const { uploadID } = await upload(zip);
+      await runWorker(uploadID);
+      const status = await statusOf(uploadID);
+      expect(status.status).toBe("failed");
+      expect(status.error).toContain("nested_master_playlist");
+      expect(await storage.listPrefix(`media/uploads/${uploadID}`)).toHaveLength(0);
+    });
+  });
+
   describe("rendition agreement", () => {
     const twoVariants = (secondMedia: string): ZipInput[] => [
       {

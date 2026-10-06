@@ -38,7 +38,8 @@ export type ZipRejectionCode =
   | "symlink"
   | "duplicate_entry"
   | "missing_master_playlist"
-  | "multiple_master_playlists";
+  | "multiple_master_playlists"
+  | "nested_master_playlist";
 
 export interface ZipRejection {
   code: ZipRejectionCode;
@@ -133,6 +134,7 @@ export function planExtraction(
   const planned: { entry: ZipEntryInfo; path: string }[] = [];
   let declaredTotalBytes = 0;
   const masters: string[] = [];
+  const nested: string[] = [];
   const seen = new Set<string>();
 
   for (const entry of files) {
@@ -177,6 +179,7 @@ export function planExtraction(
     }
 
     if (path === ZIP_LIMITS.masterPlaylist) masters.push(path);
+    else if (path.endsWith(`/${ZIP_LIMITS.masterPlaylist}`)) nested.push(path);
     planned.push({ entry, path });
   }
 
@@ -184,6 +187,15 @@ export function planExtraction(
     return {
       code: "missing_master_playlist",
       message: `Archive must contain ${ZIP_LIMITS.masterPlaylist} at its root`,
+    };
+  }
+  // One upload is one camera angle: a second master playlist below the root
+  // would be published as an ordinary media playlist, never validated as a
+  // master, and is a sign the operator zipped several angles together.
+  if (nested.length > 0) {
+    return {
+      code: "nested_master_playlist",
+      message: `${ZIP_LIMITS.masterPlaylist} may only appear at the archive root: ${nested[0]!}`,
     };
   }
   if (masters.length > 1) {
