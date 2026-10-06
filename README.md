@@ -3,7 +3,8 @@
 Backend API server for the Third Place immersive video platform (MV-HEVC / Apple Vision Pro).
 Spec: [`third-place-app-backend-server-specification-v1-FINAL.md`](third-place-app-backend-server-specification-v1-FINAL.md).
 
-**Local development only for now — not deployed anywhere yet.**
+**Local development only for now — not deployed anywhere yet.** Deployment artefacts and
+procedures are prepared under [`deploy/`](deploy/README.md).
 
 ## Stack
 
@@ -108,6 +109,7 @@ src/
   cli/              Operator tooling, e.g. operator:create (step 4)
 edge-worker/        Cloudflare Worker: stream-token validation, playlist token propagation, R2 origin (own package, see its README)
 visionos-app/       SwiftUI visionOS client: API package + catalog/player app (unverified: no Xcode in CI; see its README)
+deploy/             Production compose stack, Caddyfile, env checklist, Cloudflare notes, runbook (step 10)
 openapi.yaml        The API contract, source of truth — repo root per spec §1 (step 2)
 test/               Vitest suites (unit + integration against the Docker services)
 ```
@@ -127,3 +129,4 @@ test/               Vitest suites (unit + integration against the Docker service
 | 7 | Delivery: stream tokens, edge Worker, quality enum | ✅ done |
 | 8 | Metrics endpoint, janitor job, rate limiting, hardening pass (helmet, body limits, readiness probe) | ✅ done |
 | 9 | visionOS app: API client from the contract, browse/search/program/episode screens, immersive MV-HEVC player with angle switcher | code written, not compiled (no Xcode available) |
+| 10 | Deployment preparation: compose stack, Caddy, env checklist, Cloudflare/Worker notes, runbook (`deploy/`) | prepared, nothing deployed |

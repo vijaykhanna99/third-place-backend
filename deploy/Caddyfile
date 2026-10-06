@@ -1,0 +1,36 @@
+# TLS termination and reverse proxy for the API (docker-compose.prod.yml).
+# Caddy obtains and renews certificates automatically for {$API_DOMAIN}.
+# It sets X-Forwarded-For, which the API trusts because TRUSTED_PROXIES=1.
+
+{$API_DOMAIN} {
+	encode zstd gzip
+
+	# Health endpoints are for the platform, not the public: keep them reachable
+	# only from the host network (adjust the CIDR to your monitoring).
+	@health path /healthz /readyz
+	handle @health {
+		@external not remote_ip private_ranges
+		respond @external 404
+		reverse_proxy api:3000
+	}
+
+	handle {
+		reverse_proxy api:3000 {
+			# Fail over quickly when the instance stops being ready.
+			health_uri /readyz
+			health_interval 10s
+			health_timeout 3s
+		}
+	}
+
+	header {
+		# HSTS is set by the API as well; this covers Caddy's own responses.
+		Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+		-Server
+	}
+
+	log {
+		output stdout
+		format json
+	}
+}
