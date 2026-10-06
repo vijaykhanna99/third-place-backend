@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { imageSize } from "image-size";
 import { uuidv7 } from "uuidv7";
 import type { Db } from "../../db/client.js";
@@ -31,6 +31,7 @@ export class UploadService {
     /** Enqueues extraction; null when no queue is configured (dev without Redis). */
     private readonly enqueue: ((uploadId: string) => Promise<void>) | null,
     private readonly mediaBaseUrl: string,
+    private readonly log?: { warn: (o: unknown, m?: string) => void },
   ) {}
 
   private toView(row: typeof uploads.$inferSelect): UploadView {
@@ -107,9 +108,7 @@ export class UploadService {
       .where(eq(uploads.id, uploadId))
       .returning();
 
-    if (this.enqueue) {
-      await this.enqueue(uploadId);
-    } else {
+    if (!this.enqueue) {
       // Without a queue the upload would sit in `queued` forever; say so
       // instead of leaving the operator polling a status that cannot change.
       await this.db
@@ -117,6 +116,23 @@ export class UploadService {
         .set({ status: "failed", error: "no_worker: extraction queue is not configured" })
         .where(eq(uploads.id, uploadId));
       throw errors.internal("Extraction queue is not configured");
+    }
+
+    try {
+      await this.enqueue(uploadId);
+    } catch (err) {
+      // No job exists for a `queued` row now, and nothing would ever create
+      // one. Hand the row back to `uploading` so the operator can simply call
+      // complete again once the queue is reachable.
+      await this.db
+        .update(uploads)
+        .set({ status: "uploading" })
+        .where(and(eq(uploads.id, uploadId), eq(uploads.status, "queued")));
+      this.log?.warn(
+        { uploadId, err: err instanceof Error ? err.message : String(err) },
+        "extraction enqueue failed: upload reverted to uploading",
+      );
+      throw errors.unavailable("Extraction queue is unavailable; call complete again later");
     }
 
     return this.toView(updated!);

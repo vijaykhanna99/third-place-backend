@@ -1,5 +1,6 @@
 import { loadEnv } from "../config/env.js";
 import { createDb } from "../db/client.js";
+import { attachRedisLogging } from "../db/redis.js";
 import { Storage, storageConfigFromEnv } from "../lib/storage.js";
 import { createExtractionQueue, createExtractionWorker } from "./queue.js";
 import { recoverStuckUploads } from "./recovery.js";
@@ -26,6 +27,11 @@ const log = {
   warn: (o: unknown, m?: string) => {
     console.warn(JSON.stringify({ level: "warn", msg: m, ...(o as object) }));
   },
+  debug: (o: unknown, m?: string) => {
+    if (env.LOG_LEVEL === "debug" || env.LOG_LEVEL === "trace") {
+      console.log(JSON.stringify({ level: "debug", msg: m, ...(o as object) }));
+    }
+  },
 };
 
 const { sql, db } = createDb(env.DATABASE_URL);
@@ -42,9 +48,7 @@ const deps = {
 // a fresh job id: the original id may still sit in the completed/failed sets,
 // where BullMQ would silently drop a duplicate.
 const { queue, connection: queueConnection } = createExtractionQueue(env.REDIS_URL);
-queueConnection.on("error", (err) => {
-  log.warn({ err: err.message }, "queue redis error");
-});
+attachRedisLogging(queueConnection, log, "extraction-queue");
 const requeue = async (uploadId: string) => {
   await queue.add("extract", { uploadId }, { jobId: `${uploadId}:recovery:${String(Date.now())}` });
 };

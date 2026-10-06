@@ -2,7 +2,7 @@ import Fastify, { type FastifyInstance } from "fastify";
 import type { Redis } from "ioredis";
 import type { Env } from "./config/env.js";
 import { createDb, type Db, type PgSql } from "./db/client.js";
-import { createRedis } from "./db/redis.js";
+import { attachRedisLogging, createRedis } from "./db/redis.js";
 import { registerErrorHandler } from "./plugins/error-handler.js";
 import { registerAuthGuard } from "./plugins/auth.js";
 import { registerAppKeyGuard } from "./plugins/app-key.js";
@@ -51,24 +51,8 @@ export function buildApp(env: Env): FastifyInstance {
 
   if (env.REDIS_URL) {
     const redis = createRedis(env.REDIS_URL);
-    // ioredis crashes the process on unhandled "error" events. Log the DOWN
-    // transition at warn (visible at production log level), repeats at debug —
-    // a Redis outage must appear in logs without depending on healthz scraping.
-    let redisDown = false;
-    redis.on("error", (err) => {
-      if (!redisDown) {
-        redisDown = true;
-        app.log.warn({ err: { message: err.message } }, "redis connection down");
-      } else {
-        app.log.debug({ err: { message: err.message } }, "redis still down");
-      }
-    });
-    redis.on("ready", () => {
-      if (redisDown) {
-        redisDown = false;
-        app.log.info("redis connection recovered");
-      }
-    });
+    // A Redis outage must appear in logs without depending on healthz scraping.
+    attachRedisLogging(redis, app.log, "api");
     app.decorate("redis", redis);
     app.addHook("onClose", async () => {
       try {
@@ -108,9 +92,7 @@ export function buildApp(env: Env): FastifyInstance {
       let enqueue: ((uploadId: string) => Promise<void>) | null = null;
       if (env.REDIS_URL) {
         const { queue, connection } = createExtractionQueue(env.REDIS_URL);
-        connection.on("error", (err) => {
-          app.log.debug({ err: { message: err.message } }, "extraction queue redis error");
-        });
+        attachRedisLogging(connection, app.log, "extraction-queue");
         enqueue = async (uploadId) => {
           await queue.add("extract", { uploadId }, { jobId: uploadId });
         };
@@ -129,6 +111,7 @@ export function buildApp(env: Env): FastifyInstance {
         storage,
         enqueue,
         env.MEDIA_BASE_URL ?? "",
+        app.log,
       );
       app.decorate("uploadService", uploadService);
       registerUploadRoutes(app, uploadService);

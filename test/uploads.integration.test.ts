@@ -4,6 +4,8 @@ import type { FastifyInstance } from "fastify";
 import { loadEnvFrom } from "../src/config/env.js";
 import { buildApp } from "../src/app.js";
 import { AuthService } from "../src/modules/auth/service.js";
+import { UploadService } from "../src/modules/uploads/service.js";
+import { AppError } from "../src/lib/errors.js";
 import { Storage, storageConfigFromEnv, type StorageConfig } from "../src/lib/storage.js";
 import { processUpload, type ProcessContext } from "../src/jobs/extraction.js";
 import { MAX_RECOVERIES, recoverStuckUploads } from "../src/jobs/recovery.js";
@@ -326,6 +328,50 @@ describe.runIf(Boolean(DB_URL && S3_ENDPOINT && REDIS_URL))("uploads integration
     });
     expect(complete.statusCode).toBe(409);
     expect(complete.json<{ error: { code: string } }>().error.code).toBe("checksum_mismatch");
+  });
+
+  it("reverts to uploading when the queue is down, so complete can be retried", async () => {
+    const zip = makeZip(validBundle());
+    const init = await app.inject({
+      method: "POST",
+      url: "/api/v1/uploads",
+      headers: authed,
+      payload: {
+        fileName: "bundle.zip",
+        byteSize: zip.length,
+        checksum: createHash("sha256").update(zip).digest("hex"),
+      },
+    });
+    const { uploadID, uploadURL } = init.json<{ uploadID: string; uploadURL: string }>();
+    await fetch(uploadURL, { method: "PUT", body: new Uint8Array(zip) });
+    const [acct] = await app.pgSql!`SELECT id FROM accounts WHERE handle = ${OP}`;
+
+    // Same service wiring as the app, but the queue rejects every add.
+    const warned: unknown[] = [];
+    const service = new UploadService(
+      app.db!,
+      storage,
+      () => Promise.reject(new Error("redis connection lost")),
+      app.env.MEDIA_BASE_URL!,
+      { warn: (o) => void warned.push(o) },
+    );
+    const err: unknown = await service
+      .complete(acct!.id as string, uploadID)
+      .then(() => null, (e: unknown) => e);
+    expect(err).toBeInstanceOf(AppError);
+    expect((err as AppError).statusCode).toBe(503);
+    expect((err as AppError).code).toBe("service_unavailable");
+    expect(warned).toHaveLength(1);
+
+    // Not stuck in `queued` with no job behind it: the operator can retry.
+    expect((await statusOf(uploadID)).status).toBe("uploading");
+    const retry = await app.inject({
+      method: "POST",
+      url: `/api/v1/uploads/${uploadID}/complete`,
+      headers: authed,
+    });
+    expect(retry.statusCode).toBe(200);
+    expect(retry.json<{ status: string }>().status).toBe("queued");
   });
 
   it("processes each upload once — re-running the worker is a no-op", async () => {

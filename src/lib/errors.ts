@@ -36,4 +36,7 @@ export const errors = {
   conflict: (code: string, message: string) => new AppError(409, code, message),
   rateLimited: (message = "Too many requests") => new AppError(429, "rate_limited", message),
   internal: (message = "Internal server error") => new AppError(500, "internal_error", message),
+  /** A dependency (queue, object storage) is down; the same request can be retried later. */
+  unavailable: (message = "Service temporarily unavailable") =>
+    new AppError(503, "service_unavailable", message),
 } as const;
