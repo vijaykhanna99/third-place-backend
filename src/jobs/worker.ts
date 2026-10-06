@@ -30,7 +30,13 @@ const log = {
 
 const { sql, db } = createDb(env.DATABASE_URL);
 const storage = new Storage(storageConfig);
-const deps = { db, storage, log, stuckAfterMs: env.UPLOAD_STUCK_AFTER_MS };
+const deps = {
+  db,
+  storage,
+  log,
+  stuckAfterMs: env.UPLOAD_STUCK_AFTER_MS,
+  limits: { maxEntryBytes: env.UPLOAD_MAX_ENTRY_BYTES },
+};
 
 // Producer handle for re-enqueueing recovered uploads. A recovered upload gets
 // a fresh job id: the original id may still sit in the completed/failed sets,

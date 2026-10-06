@@ -11,11 +11,23 @@ export const ZIP_LIMITS = {
   maxFiles: 5_000,
   /** Max total uncompressed bytes, enforced cumulatively during extraction. */
   maxTotalBytes: 10 * 1024 * 1024 * 1024,
+  /** Max uncompressed bytes for a single entry (env UPLOAD_MAX_ENTRY_BYTES overrides). */
+  maxEntryBytes: 2 * 1024 * 1024 * 1024,
+  /** Max bytes for an entry that is parsed in memory (playlists, subtitles). */
+  maxTextBytes: 16 * 1024 * 1024,
   /** Required master playlist, exactly one, at the archive root. */
   masterPlaylist: "index.m3u8",
   /** Only these extensions may appear in an HLS bundle. */
   allowedExtensions: [".m3u8", ".ts", ".m4s", ".mp4", ".vtt"] as const,
 } as const;
+
+/** The numeric limits, overridable per deployment; the rest of ZIP_LIMITS is fixed policy. */
+export interface ZipLimits {
+  maxFiles: number;
+  maxTotalBytes: number;
+  maxEntryBytes: number;
+  maxTextBytes: number;
+}
 
 export type ZipRejectionCode =
   | "too_many_files"
@@ -24,6 +36,7 @@ export type ZipRejectionCode =
   | "disallowed_extension"
   | "unsafe_path"
   | "symlink"
+  | "duplicate_entry"
   | "missing_master_playlist"
   | "multiple_master_playlists";
 
@@ -101,22 +114,26 @@ export interface ZipPlan {
  * Pre-extraction validation: decides, from the central directory alone, whether
  * the archive may be extracted at all. Nothing is written before this passes.
  */
-export function planExtraction(entries: ZipEntryInfo[]): ZipPlan | ZipRejection {
+export function planExtraction(
+  entries: ZipEntryInfo[],
+  limits: ZipLimits = ZIP_LIMITS,
+): ZipPlan | ZipRejection {
   const files = entries.filter((e) => !isDirectoryEntry(e.fileName));
 
   if (files.length === 0) {
     return { code: "empty_archive", message: "Archive contains no files" };
   }
-  if (files.length > ZIP_LIMITS.maxFiles) {
+  if (files.length > limits.maxFiles) {
     return {
       code: "too_many_files",
-      message: `Archive contains ${String(files.length)} files (limit ${String(ZIP_LIMITS.maxFiles)})`,
+      message: `Archive contains ${String(files.length)} files (limit ${String(limits.maxFiles)})`,
     };
   }
 
   const planned: { entry: ZipEntryInfo; path: string }[] = [];
   let declaredTotalBytes = 0;
   const masters: string[] = [];
+  const seen = new Set<string>();
 
   for (const entry of files) {
     if (isSymlink(entry.externalFileAttributes)) {
@@ -126,6 +143,13 @@ export function planExtraction(entries: ZipEntryInfo[]): ZipPlan | ZipRejection 
     if (path === null) {
       return { code: "unsafe_path", message: `Unsafe path in archive: ${entry.fileName}` };
     }
+    // Two raw names normalizing to one path (`a/b.ts` and `./a//b.ts`, or a
+    // literal repeat) would otherwise have the later entry silently replace
+    // the earlier one in storage.
+    if (seen.has(path)) {
+      return { code: "duplicate_entry", message: `Archive contains ${path} more than once` };
+    }
+    seen.add(path);
     const ext = extensionOf(path);
     if (!(ZIP_LIMITS.allowedExtensions as readonly string[]).includes(ext)) {
       return {
@@ -134,14 +158,20 @@ export function planExtraction(entries: ZipEntryInfo[]): ZipPlan | ZipRejection 
       };
     }
 
+    if (entry.uncompressedSize > limits.maxEntryBytes) {
+      return {
+        code: "too_large",
+        message: `Entry exceeds the per-file limit of ${String(limits.maxEntryBytes)} bytes: ${entry.fileName}`,
+      };
+    }
     declaredTotalBytes += entry.uncompressedSize;
     // Declared sizes can lie, so extraction re-checks cumulatively; this catches
     // the honest-but-oversized case before any bytes move.
-    if (declaredTotalBytes > ZIP_LIMITS.maxTotalBytes) {
+    if (declaredTotalBytes > limits.maxTotalBytes) {
       return {
         code: "too_large",
         message: `Archive expands beyond the ${String(
-          ZIP_LIMITS.maxTotalBytes / (1024 * 1024 * 1024),
+          limits.maxTotalBytes / (1024 * 1024 * 1024),
         )} GB limit`,
       };
     }

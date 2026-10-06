@@ -58,6 +58,12 @@ const envSchema = z.object({
   MEDIA_BASE_URL: optional(z.string().url()),
 
   // extraction worker (step 6.5)
+  /** Per-entry uncompressed size cap inside an upload archive. */
+  UPLOAD_MAX_ENTRY_BYTES: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(2 * 1024 * 1024 * 1024),
   /** A `processing` upload older than this is treated as abandoned and reclaimed. */
   UPLOAD_STUCK_AFTER_MS: z.coerce
     .number()

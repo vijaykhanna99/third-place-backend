@@ -7,7 +7,7 @@ import { AuthService } from "../src/modules/auth/service.js";
 import { Storage, storageConfigFromEnv, type StorageConfig } from "../src/lib/storage.js";
 import { processUpload, type ProcessContext } from "../src/jobs/extraction.js";
 import { MAX_RECOVERIES, recoverStuckUploads } from "../src/jobs/recovery.js";
-import { makeZip, type ZipInput } from "./helpers/zip-builder.js";
+import { SYMLINK_ATTRS, makeZip, type ZipInput } from "./helpers/zip-builder.js";
 
 /**
  * Upload-pipeline integration — needs Postgres, Redis, and object storage:
@@ -491,6 +491,106 @@ describe.runIf(Boolean(DB_URL && S3_ENDPOINT && REDIS_URL))("uploads integration
     // The requeued upload then processes normally.
     await runWorker(a);
     expect((await statusOf(a)).status).toBe("ready");
+  });
+
+  describe("hostile archives", () => {
+    const failedWith = async (zip: Buffer, code: string, ctxLimits?: Record<string, number>) => {
+      const { uploadID } = await upload(zip);
+      await processUpload(
+        { db: app.db!, storage, ...(ctxLimits ? { limits: ctxLimits } : {}) },
+        uploadID,
+      );
+      const status = await statusOf(uploadID);
+      expect(status.status, status.error ?? "").toBe("failed");
+      expect(status.error).toContain(code);
+      // Nothing is ever left half-published.
+      expect(await storage.listPrefix(`media/uploads/${uploadID}`)).toHaveLength(0);
+      return status;
+    };
+
+    it("rejects an entry whose header understates its real size (lying header)", async () => {
+      const bundle = validBundle().map((f) =>
+        f.path === "uhd8k/segment-00001.ts"
+          ? { ...f, content: Buffer.alloc(64 * 1024, 0x41), declaredSize: 100 }
+          : f,
+      );
+      await failedWith(makeZip(bundle), "entry_size_mismatch");
+    });
+
+    it("rejects an entry whose header overstates its real size", async () => {
+      const bundle = validBundle().map((f) =>
+        f.path === "uhd8k/segment-00001.ts" ? { ...f, declaredSize: 99_999 } : f,
+      );
+      await failedWith(makeZip(bundle), "entry_size_mismatch");
+    });
+
+    it("rejects a lying header on a playlist entry too", async () => {
+      const bundle = validBundle().map((f) =>
+        f.path === "uhd8k/playlist.m3u8" ? { ...f, declaredSize: 10 } : f,
+      );
+      await failedWith(makeZip(bundle), "entry_size_mismatch");
+    });
+
+    it("accepts stored (uncompressed) entries", async () => {
+      const zip = makeZip(validBundle().map((f) => ({ ...f, store: true })));
+      const { uploadID } = await upload(zip);
+      await runWorker(uploadID);
+      expect((await statusOf(uploadID)).status).toBe("ready");
+      expect(await storage.listPrefix(`media/uploads/${uploadID}`)).toHaveLength(6);
+    });
+
+    it("rejects a stored entry whose sizes disagree", async () => {
+      const bundle = validBundle().map((f) =>
+        f.path === "uhd8k/segment-00002.ts" ? { ...f, store: true, declaredSize: 5 } : f,
+      );
+      await failedWith(makeZip(bundle), "entry_size_mismatch");
+    });
+
+    it("rejects symlink entries", async () => {
+      const zip = makeZip([
+        ...validBundle(),
+        { path: "uhd8k/link.ts", content: "../../etc/passwd", externalFileAttributes: SYMLINK_ATTRS },
+      ]);
+      await failedWith(zip, "symlink");
+    });
+
+    it("rejects duplicate entry names instead of collapsing them", async () => {
+      const literal = makeZip([...validBundle(), { path: "index.m3u8", content: MASTER }]);
+      await failedWith(literal, "duplicate_entry");
+      // Two spellings of one path count as a duplicate as well.
+      const normalized = makeZip([
+        ...validBundle(),
+        { path: "./uhd8k//segment-00001.ts", content: "other bytes" },
+      ]);
+      await failedWith(normalized, "duplicate_entry");
+    });
+
+    it("enforces the per-entry size cap on inflated bytes", async () => {
+      const bundle = validBundle().map((f) =>
+        f.path === "uhd8k/segment-00002.ts" ? { ...f, content: Buffer.alloc(4096, 0x42) } : f,
+      );
+      await failedWith(makeZip(bundle), "too_large", { maxEntryBytes: 1024 });
+    });
+
+    it("stops reading the central directory once the file count exceeds the cap", async () => {
+      await failedWith(makeZip(validBundle()), "too_many_files", { maxFiles: 3 });
+    });
+
+    it("streams a large entry to storage in multipart parts without buffering it", async () => {
+      const big = 20 * 1024 * 1024; // > 2 multipart parts at the 8 MiB part size
+      const bundle = validBundle().map((f) =>
+        f.path === "uhd8k/segment-00001.ts" ? { ...f, content: Buffer.alloc(big, 0x7a) } : f,
+      );
+      const { uploadID } = await upload(makeZip(bundle));
+      await runWorker(uploadID);
+      expect((await statusOf(uploadID)).status).toBe("ready");
+      const head = await storage.head(`media/uploads/${uploadID}/uhd8k/segment-00001.ts`);
+      expect(head?.size).toBe(big);
+    });
+
+    it("rejects something that is not a ZIP archive at all", async () => {
+      await failedWith(Buffer.from("definitely not a zip file, just bytes"), "invalid_archive");
+    });
   });
 
   it("hides other operators' uploads behind 404", async () => {

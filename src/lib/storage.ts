@@ -7,6 +7,7 @@ import {
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
+import { Upload } from "@aws-sdk/lib-storage";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import type { Env } from "../config/env.js";
 
@@ -102,6 +103,28 @@ export class Storage {
         ...(opts.contentLength === undefined ? {} : { ContentLength: opts.contentLength }),
       }),
     );
+  }
+
+  /**
+   * Streams a body of unknown length to storage as a multipart upload. Only a
+   * few parts are ever buffered (partSize × queueSize), whatever the total —
+   * this is how multi-GB archive entries move without being held in memory.
+   * A failed upload aborts its multipart parts so nothing is left billable.
+   */
+  async putStream(key: string, body: Readable, opts: { contentType?: string } = {}): Promise<void> {
+    const upload = new Upload({
+      client: this.client,
+      params: {
+        Bucket: this.config.bucket,
+        Key: key,
+        Body: body,
+        ...(opts.contentType ? { ContentType: opts.contentType } : {}),
+      },
+      partSize: 8 * 1024 * 1024,
+      queueSize: 4,
+      leavePartsOnError: false,
+    });
+    await upload.done();
   }
 
   async delete(keys: string[]): Promise<void> {
