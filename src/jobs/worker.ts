@@ -10,7 +10,8 @@ import { recoverStuckUploads } from "./recovery.js";
  * Extraction worker entrypoint (`pnpm worker`). Separate process from the API:
  * a multi-GB extraction must never compete with request handling.
  */
-const env = loadEnv();
+// The worker checks its own inputs below; it does not need the API's secrets.
+const env = loadEnv({}, { strict: false });
 if (!env.DATABASE_URL || !env.REDIS_URL) {
   console.error("worker requires DATABASE_URL and REDIS_URL");
   process.exit(1);

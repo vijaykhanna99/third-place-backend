@@ -8,7 +8,8 @@ import { loadEnv } from "../config/env.js";
  * Uses a single dedicated connection (max: 1) — required for advisory-locked
  * migration runs.
  */
-const env = loadEnv();
+// Only the database is needed here; the API's production checks do not apply.
+const env = loadEnv({}, { strict: false });
 if (!env.DATABASE_URL) {
   console.error("DATABASE_URL is not set — copy .env.example to .env and start `pnpm db:up`.");
   process.exit(1);

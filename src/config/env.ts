@@ -143,8 +143,21 @@ function parseTrustProxy(raw: string | undefined): number | string[] | false {
  * process.env. Tests use this directly so a developer's local .env can never
  * change test results.
  */
-export function loadEnvFrom(source: Record<string, string | undefined>): Env {
-  const parsed = strictEnvSchema.safeParse(source);
+export interface LoadEnvOptions {
+  /**
+   * Enforce the production dependency set (default). Tooling that needs only
+   * a slice of the configuration — the migrator, the operator CLI, the
+   * extraction worker, each of which checks its own inputs — passes false so
+   * it can run inside a production container without the API's secrets.
+   */
+  strict?: boolean;
+}
+
+export function loadEnvFrom(
+  source: Record<string, string | undefined>,
+  { strict = true }: LoadEnvOptions = {},
+): Env {
+  const parsed = (strict ? strictEnvSchema : envSchema).safeParse(source);
   if (!parsed.success) {
     const details = parsed.error.issues
       .map((i) => `  ${i.path.join(".")}: ${i.message}`)
@@ -162,6 +175,9 @@ export function loadEnvFrom(source: Record<string, string | undefined>): Env {
 }
 
 /** Runtime entrypoint: process.env (with .env applied) plus optional overrides. */
-export function loadEnv(overrides: Record<string, string | undefined> = {}): Env {
-  return loadEnvFrom({ ...process.env, ...overrides });
+export function loadEnv(
+  overrides: Record<string, string | undefined> = {},
+  options: LoadEnvOptions = {},
+): Env {
+  return loadEnvFrom({ ...process.env, ...overrides }, options);
 }

@@ -77,3 +77,14 @@ describe("loadEnvFrom", () => {
     expect(() => loadEnvFrom({ NODE_ENV: "test" })).not.toThrow();
   });
 });
+
+describe("loadEnvFrom strict: false", () => {
+  it("lets single-purpose tooling run in production with only what it needs", () => {
+    const env = loadEnvFrom(
+      { NODE_ENV: "production", DATABASE_URL: "postgres://u:p@db:5432/tplace" },
+      { strict: false },
+    );
+    expect(env.NODE_ENV).toBe("production");
+    expect(env.REDIS_URL).toBeUndefined();
+  });
+});

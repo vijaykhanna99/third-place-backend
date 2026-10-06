@@ -54,7 +54,8 @@ async function operatorCreate(argv: string[]): Promise<void> {
     process.exit(1);
   }
 
-  const env = loadEnv();
+  // Only the database is needed here; the API's production checks do not apply.
+  const env = loadEnv({}, { strict: false });
   if (!env.DATABASE_URL) {
     console.error("DATABASE_URL is not set — copy .env.example to .env and start `pnpm db:up`.");
     process.exit(1);
