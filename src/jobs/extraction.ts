@@ -10,6 +10,7 @@ import type { Db } from "../db/client.js";
 import { uploads } from "../db/schema/index.js";
 import { isMasterPlaylist, parseMaster, parseMedia, resolveRelative } from "../lib/hls.js";
 import type { Storage } from "../lib/storage.js";
+import { isSubtitleRejection, validateSubtitleTracks, validateWebVtt } from "../lib/subtitles.js";
 import {
   ZIP_LIMITS,
   isDirectoryEntry,
@@ -460,6 +461,24 @@ export async function processUpload(
     if (master.variants.length === 0) {
       await fail("invalid_master_playlist", "Master playlist declares no variant streams");
       return;
+    }
+
+    // Subtitle declarations (spec §8.4): LANGUAGE present and BCP 47, one
+    // track per language, playlist in a directory named after the tag.
+    const subtitleTracks = validateSubtitleTracks(master.media, plan.masterPath);
+    if (isSubtitleRejection(subtitleTracks)) {
+      await fail(subtitleTracks.code, subtitleTracks.message);
+      return;
+    }
+    // Every WebVTT file in the bundle: a real WebVTT signature and no
+    // positioning cue settings — placement belongs to the client.
+    for (const [path, buf] of texts) {
+      if (!path.endsWith(".vtt")) continue;
+      const rejection = validateWebVtt(path, buf.toString("utf8"));
+      if (rejection) {
+        await fail(rejection.code, rejection.message);
+        return;
+      }
     }
 
     // Variants are the quality renditions of one stream; media entries are

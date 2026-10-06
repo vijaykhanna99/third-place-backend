@@ -421,6 +421,90 @@ describe.runIf(Boolean(DB_URL && S3_ENDPOINT && REDIS_URL))("uploads integration
     expect(status.durationSec).toBe(0);
   });
 
+  describe("subtitle rules (spec §8.4)", () => {
+    const withMaster = (master: string, extra: ZipInput[] = []) => [
+      ...validBundle().map((f) => (f.path === "index.m3u8" ? { ...f, content: master } : f)),
+      ...extra,
+    ];
+    const masterWith = (mediaLine: string) => `#EXTM3U
+#EXT-X-VERSION:7
+${mediaLine}
+#EXT-X-STREAM-INF:BANDWIDTH=48000000,RESOLUTION=7680x4320,SUBTITLES="subs"
+uhd8k/playlist.m3u8
+`;
+    const rejected = async (files: ZipInput[], code: string) => {
+      const { uploadID } = await upload(makeZip(files));
+      await runWorker(uploadID);
+      const status = await statusOf(uploadID);
+      expect(status.status, status.error ?? "").toBe("failed");
+      expect(status.error).toContain(code);
+      expect(await storage.listPrefix(`media/uploads/${uploadID}`)).toHaveLength(0);
+    };
+
+    it("requires LANGUAGE on subtitle tracks", async () => {
+      await rejected(
+        withMaster(masterWith('#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="JA",URI="subtitles/ja/subtitle.m3u8"')),
+        "subtitle_language_missing",
+      );
+    });
+
+    it("requires a BCP 47 LANGUAGE", async () => {
+      await rejected(
+        withMaster(masterWith('#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="JA",LANGUAGE="japanese",URI="subtitles/ja/subtitle.m3u8"')),
+        "subtitle_language_invalid",
+      );
+    });
+
+    it("allows one track per language", async () => {
+      await rejected(
+        withMaster(
+          masterWith(
+            '#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="JA",LANGUAGE="ja",URI="subtitles/ja/subtitle.m3u8"\n' +
+              '#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="JA forced",LANGUAGE="ja",FORCED=YES,URI="subtitles/ja/forced.m3u8"',
+          ),
+          [{ path: "subtitles/ja/forced.m3u8", content: SUBS }],
+        ),
+        "subtitle_language_duplicate",
+      );
+    });
+
+    it("requires the subtitle directory to be the language tag", async () => {
+      await rejected(
+        withMaster(
+          masterWith('#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="EN",LANGUAGE="en",URI="subtitles/ja/subtitle.m3u8"'),
+        ),
+        "subtitle_directory_mismatch",
+      );
+    });
+
+    it("fails a subtitle playlist whose .vtt segment is missing", async () => {
+      await rejected(
+        validBundle().filter((f) => f.path !== "subtitles/ja/seg-00001.vtt"),
+        "missing_reference",
+      );
+    });
+
+    it("rejects WebVTT cues that carry positioning settings", async () => {
+      await rejected(
+        validBundle().map((f) =>
+          f.path === "subtitles/ja/seg-00001.vtt"
+            ? { ...f, content: "WEBVTT\n\n00:00.000 --> 00:06.000 position:10% line:0 align:start\nhello\n" }
+            : f,
+        ),
+        "subtitle_cue_positioning",
+      );
+    });
+
+    it("rejects a .vtt that is not WebVTT", async () => {
+      await rejected(
+        validBundle().map((f) =>
+          f.path === "subtitles/ja/seg-00001.vtt" ? { ...f, content: "1\n00:00:00,000 --> 00:00:06,000\nsrt\n" } : f,
+        ),
+        "invalid_subtitle",
+      );
+    });
+  });
+
   describe("rendition agreement", () => {
     const twoVariants = (secondMedia: string): ZipInput[] => [
       {
