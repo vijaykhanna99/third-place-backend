@@ -91,7 +91,9 @@ export function buildApp(env: Env): FastifyInstance {
       const storage = new Storage(storageConfig);
       let enqueue: ((uploadId: string) => Promise<void>) | null = null;
       if (env.REDIS_URL) {
-        const { queue, connection } = createExtractionQueue(env.REDIS_URL);
+        const { queue, connection } = createExtractionQueue(env.REDIS_URL, {
+          prefix: env.QUEUE_PREFIX,
+        });
         attachRedisLogging(connection, app.log, "extraction-queue");
         enqueue = async (uploadId) => {
           await queue.add("extract", { uploadId }, { jobId: uploadId });

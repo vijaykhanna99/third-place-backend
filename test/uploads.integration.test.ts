@@ -4,14 +4,22 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
+import { Queue, type Worker } from "bullmq";
 import { loadEnvFrom } from "../src/config/env.js";
 import { buildApp } from "../src/app.js";
+import { createQueueRedis } from "../src/db/redis.js";
 import { AuthService } from "../src/modules/auth/service.js";
-import { UploadService } from "../src/modules/uploads/service.js";
+import { IMAGE_LIMITS, UploadService } from "../src/modules/uploads/service.js";
 import { AppError } from "../src/lib/errors.js";
 import { Storage, storageConfigFromEnv, type StorageConfig } from "../src/lib/storage.js";
 import { processUpload, type ProcessContext } from "../src/jobs/extraction.js";
+import {
+  EXTRACTION_QUEUE,
+  createExtractionWorker,
+  type ExtractionJobData,
+} from "../src/jobs/queue.js";
 import { MAX_RECOVERIES, recoverStuckUploads } from "../src/jobs/recovery.js";
+import { expectContract } from "./helpers/contract.js";
 import { SYMLINK_ATTRS, makeZip, type ZipInput } from "./helpers/zip-builder.js";
 
 /**
@@ -20,8 +28,12 @@ import { SYMLINK_ATTRS, makeZip, type ZipInput } from "./helpers/zip-builder.js"
  *   TEST_REDIS_URL=redis://localhost:6379 \
  *   TEST_S3_ENDPOINT=http://127.0.0.1:9000 pnpm test
  *
- * The queue is bypassed on purpose: the extraction processor is invoked
- * directly so tests assert the pipeline, not BullMQ's delivery.
+ * Most tests invoke the extraction processor directly so they assert the
+ * pipeline, not BullMQ's delivery; the "queue delivery" block at the end
+ * covers the producer/consumer contract with a real Worker. Every job this
+ * file enqueues lives under its own Redis key prefix, so a developer's
+ * `pnpm worker` on the same Redis never sees them, and the prefix is
+ * obliterated afterwards so nothing leaks into the shared instance.
  */
 const DB_URL = process.env.TEST_DATABASE_URL;
 const S3_ENDPOINT = process.env.TEST_S3_ENDPOINT;
@@ -29,6 +41,7 @@ const REDIS_URL = process.env.TEST_REDIS_URL;
 const RUN = Date.now();
 const OP = `itest-up-${RUN}`;
 const PASSWORD = "upload-operator-1";
+const QUEUE_PREFIX = `itest-up-${String(RUN)}`;
 
 const MASTER = `#EXTM3U
 #EXT-X-VERSION:7
@@ -98,16 +111,33 @@ describe.runIf(Boolean(DB_URL && S3_ENDPOINT && REDIS_URL))("uploads integration
 
   const authed = { authorization: "" as string };
 
+  /**
+   * Removes every row this suite can create, in foreign-key order, so a run
+   * that crashed mid-test can never poison the next one: catalog rows first
+   * (their stream rows RESTRICT the uploads), then images and uploads (they
+   * reference the operator), then the operator accounts themselves.
+   */
+  async function cleanDatabase() {
+    const sql = app.pgSql!;
+    const ops = sql`SELECT id FROM accounts WHERE handle LIKE 'itest-up-%'`;
+    await sql`DELETE FROM episode_streams WHERE upload_id IN (SELECT id FROM uploads WHERE created_by IN (${ops}))`;
+    await sql`DELETE FROM programs WHERE title LIKE 'itest-up:%' OR owner_account_id IN (${ops})`;
+    await sql`DELETE FROM genres WHERE name LIKE 'itest-up:%'`;
+    await sql`DELETE FROM images WHERE created_by IN (${ops})`;
+    await sql`DELETE FROM uploads WHERE created_by IN (${ops})`;
+    await sql`DELETE FROM accounts WHERE handle LIKE 'itest-up-%'`;
+  }
+
   beforeAll(async () => {
     app = buildApp(
       loadEnvFrom({
         NODE_ENV: "test",
         LOG_LEVEL: "error",
         DATABASE_URL: DB_URL!,
-        // A real queue so `complete` enqueues as it would in production; no
-        // worker runs here, so the tests drive processUpload() directly and
-        // assert the pipeline rather than BullMQ's delivery.
+        // A real queue so `complete` enqueues as it would in production,
+        // namespaced so no other worker on this Redis can pick the jobs up.
         REDIS_URL: REDIS_URL!,
+        QUEUE_PREFIX,
         JWT_SIGNING_KEY: "e".repeat(64),
         R2_ENDPOINT: S3_ENDPOINT!,
         R2_ACCESS_KEY_ID: "tplace",
@@ -116,9 +146,10 @@ describe.runIf(Boolean(DB_URL && S3_ENDPOINT && REDIS_URL))("uploads integration
         MEDIA_BASE_URL: `${S3_ENDPOINT!}/tplace-media-dev/media`,
       }),
     );
-    await app.pgSql!`DELETE FROM uploads WHERE r2_key LIKE ${"tmp/uploads/%"} AND created_by IN (SELECT id FROM accounts WHERE handle LIKE 'itest-up-%')`;
-    await app.pgSql!`DELETE FROM images WHERE r2_key LIKE 'media/images/%' AND created_by IN (SELECT id FROM accounts WHERE handle LIKE 'itest-up-%')`;
-    await app.pgSql!`DELETE FROM accounts WHERE handle LIKE 'itest-up-%'`;
+    await cleanDatabase();
+    // Queue keys left by a run that died before its afterAll.
+    const stale = await app.redis!.keys("itest-up-*");
+    if (stale.length > 0) await app.redis!.del(...stale);
 
     const auth = new AuthService(app.db!, app.env);
     await auth.createAccount({
@@ -153,9 +184,15 @@ describe.runIf(Boolean(DB_URL && S3_ENDPOINT && REDIS_URL))("uploads integration
       SELECT r2_key FROM images WHERE created_by IN (SELECT id FROM accounts WHERE handle LIKE 'itest-up-%')`;
     await storage.delete(imgs.map((i) => i.r2_key as string)).catch(() => undefined);
 
-    await app.pgSql!`DELETE FROM images WHERE created_by IN (SELECT id FROM accounts WHERE handle LIKE 'itest-up-%')`;
-    await app.pgSql!`DELETE FROM uploads WHERE created_by IN (SELECT id FROM accounts WHERE handle LIKE 'itest-up-%')`;
-    await app.pgSql!`DELETE FROM accounts WHERE handle LIKE 'itest-up-%'`;
+    await cleanDatabase();
+
+    // Every job this run enqueued sits under QUEUE_PREFIX; remove the lot.
+    const connection = createQueueRedis(REDIS_URL!);
+    const queue = new Queue(EXTRACTION_QUEUE, { connection, prefix: QUEUE_PREFIX });
+    await queue.obliterate({ force: true });
+    await queue.close();
+    await connection.quit();
+
     await app.close();
   });
 
@@ -172,6 +209,7 @@ describe.runIf(Boolean(DB_URL && S3_ENDPOINT && REDIS_URL))("uploads integration
       payload: { fileName: "bundle.zip", byteSize: zip.length, checksum },
     });
     expect(init.statusCode).toBe(200);
+    expectContract("POST", "/api/v1/uploads", 200, init.json());
     const { uploadID, uploadURL } = init.json<{ uploadID: string; uploadURL: string }>();
 
     // Upload straight to storage, exactly as the operator's tool would.
@@ -187,16 +225,18 @@ describe.runIf(Boolean(DB_URL && S3_ENDPOINT && REDIS_URL))("uploads integration
       url: `/api/v1/uploads/${uploadID}/complete`,
       headers: authed,
     });
+    expectContract("POST", "/api/v1/uploads/{uploadID}/complete", complete.statusCode, complete.json());
     return { uploadID, complete };
   }
 
   const runWorker = (uploadId: string, ctx: ProcessContext = {}, store: Storage = storage) =>
     processUpload({ db: app.db!, storage: store }, uploadId, ctx);
 
-  const statusOf = async (uploadID: string) =>
-    (
-      await app.inject({ method: "GET", url: `/api/v1/uploads/${uploadID}`, headers: authed })
-    ).json<{ status: string; playlistURL: string | null; durationSec: number | null; error: string | null }>();
+  const statusOf = async (uploadID: string) => {
+    const res = await app.inject({ method: "GET", url: `/api/v1/uploads/${uploadID}`, headers: authed });
+    expectContract("GET", "/api/v1/uploads/{uploadID}", res.statusCode, res.json());
+    return res.json<{ status: string; playlistURL: string | null; durationSec: number | null; error: string | null }>();
+  };
 
   it("runs a valid HLS bundle end to end and publishes it", async () => {
     const zip = makeZip(validBundle());
@@ -305,6 +345,32 @@ describe.runIf(Boolean(DB_URL && S3_ENDPOINT && REDIS_URL))("uploads integration
       headers: authed,
     });
     expect(complete.statusCode).toBe(400);
+    expectContract("POST", "/api/v1/uploads/{uploadID}/complete", 400, complete.json());
+  });
+
+  it("rejects declarations the contract rules out before reserving anything", async () => {
+    const checksum = "a".repeat(64);
+    const bad = [
+      // Above the single-PUT ceiling of object storage (5 GiB).
+      { fileName: "huge.zip", byteSize: 5 * 1024 * 1024 * 1024 + 1, checksum },
+      // Uppercase hex: the contract says lowercase, and the server must agree.
+      { fileName: "bundle.zip", byteSize: 10, checksum: "A".repeat(64) },
+      { fileName: "bundle.zip", byteSize: 0, checksum },
+      { fileName: "", byteSize: 10, checksum },
+    ];
+    for (const payload of bad) {
+      const res = await app.inject({ method: "POST", url: "/api/v1/uploads", headers: authed, payload });
+      expect(res.statusCode, JSON.stringify(payload)).toBe(400);
+      expectContract("POST", "/api/v1/uploads", 400, res.json());
+    }
+    // The ceiling itself is accepted.
+    const atCap = await app.inject({
+      method: "POST",
+      url: "/api/v1/uploads",
+      headers: authed,
+      payload: { fileName: "max.zip", byteSize: 5 * 1024 * 1024 * 1024, checksum },
+    });
+    expect(atCap.statusCode).toBe(200);
   });
 
   it("detects a size mismatch between declaration and stored object", async () => {
@@ -332,6 +398,7 @@ describe.runIf(Boolean(DB_URL && S3_ENDPOINT && REDIS_URL))("uploads integration
     });
     expect(complete.statusCode).toBe(409);
     expect(complete.json<{ error: { code: string } }>().error.code).toBe("checksum_mismatch");
+    expectContract("POST", "/api/v1/uploads/{uploadID}/complete", 409, complete.json());
   });
 
   it("reverts to uploading when the queue is down, so complete can be retried", async () => {
@@ -977,11 +1044,69 @@ uhd4k/playlist.m3u8
       payload,
     });
     expect(res.statusCode).toBe(200);
+    expectContract("POST", "/api/v1/uploads/images", 200, res.json());
     const body = res.json<{ imageID: string; url: string; width: number; height: number }>();
     expect(body.width).toBe(1);
     expect(body.height).toBe(1);
     expect(body.url).toBe(`${S3_ENDPOINT!}/tplace-media-dev/media/images/${body.imageID}.png`);
     expect(await storage.head(`media/images/${body.imageID}.png`)).not.toBeNull();
+  });
+
+  describe("thumbnail size cap (spec §7.4)", () => {
+    /** A real PNG header followed by padding — image-size reads only the header. */
+    const paddedPng = (total: number) =>
+      Buffer.concat([PNG_1x1, Buffer.alloc(total - PNG_1x1.length, 0)]);
+    const imageCount = async () => {
+      const [row] = await app.pgSql!`
+        SELECT count(*)::int AS n FROM images
+        WHERE created_by IN (SELECT id FROM accounts WHERE handle = ${OP})`;
+      return row!.n as number;
+    };
+
+    it("accepts a thumbnail of exactly 10 MB", async () => {
+      const { payload, contentType } = await multipartImage(
+        paddedPng(IMAGE_LIMITS.maxBytes),
+        "image/png",
+        "max.png",
+      );
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/v1/uploads/images",
+        headers: { ...authed, "content-type": contentType },
+        payload,
+      });
+      expect(res.statusCode, res.body).toBe(200);
+      const body = res.json<{ imageID: string; byteSize: number }>();
+      expect(body.byteSize).toBe(IMAGE_LIMITS.maxBytes);
+      expect((await storage.head(`media/images/${body.imageID}.png`))?.size).toBe(IMAGE_LIMITS.maxBytes);
+    });
+
+    it("rejects one byte more with 400 and stores nothing", async () => {
+      const before = await imageCount();
+      const { payload, contentType } = await multipartImage(
+        paddedPng(IMAGE_LIMITS.maxBytes + 1),
+        "image/png",
+        "over.png",
+      );
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/v1/uploads/images",
+        headers: { ...authed, "content-type": contentType },
+        payload,
+      });
+      expect(res.statusCode).toBe(400);
+      const body = res.json<{ error: { code: string; message: string } }>();
+      expect(body.error.code).toBe("validation_failed");
+      expect(body.error.message).toContain("10 MB");
+      expectContract("POST", "/api/v1/uploads/images", 400, body);
+      // Neither a truncated object nor a row: the cap is a hard reject.
+      expect(await imageCount()).toBe(before);
+      const keys = await storage.listPrefix("media/images/");
+      for (const key of keys) {
+        const head = await storage.head(key);
+        expect(head?.size, key).toBeLessThanOrEqual(IMAGE_LIMITS.maxBytes);
+      }
+    });
   });
 
   it("rejects a non-image masquerading as a PNG", async () => {
@@ -1036,19 +1161,104 @@ uhd4k/playlist.m3u8
       },
     });
     expect(created.statusCode).toBe(200);
+    expectContract("POST", "/api/v1/programs", 200, created.json());
     // The episode's duration comes from what the worker computed.
-    expect(
-      created.json<{ season: { episodes: { durationSec: number }[] }[] }>().season[0]!.episodes[0]!
-        .durationSec,
-    ).toBe(12);
+    const program = created.json<{
+      season: { episodes: { durationSec: number; streams: { streamURL: string }[] }[] }[];
+    }>();
+    expect(program.season[0]!.episodes[0]!.durationSec).toBe(12);
+    // The stream URL and the upload's playlistURL name the same public object.
+    expect(program.season[0]!.episodes[0]!.streams[0]!.streamURL).toBe(
+      (await statusOf(uploadID)).playlistURL,
+    );
+    // Catalog rows are removed by afterAll's FK-ordered cleanup.
+  });
 
-    // Clean up catalog rows created here.
-    const programId = created.json<{ id: string }>().id;
-    await app.pgSql!`DELETE FROM episode_streams WHERE upload_id = ${uploadID}`;
-    await app.pgSql!`DELETE FROM episodes e USING seasons s WHERE e.season_id = s.id AND s.program_id = ${programId}`;
-    await app.pgSql!`DELETE FROM seasons WHERE program_id = ${programId}`;
-    await app.pgSql!`DELETE FROM program_genres WHERE program_id = ${programId}`;
-    await app.pgSql!`DELETE FROM programs WHERE id = ${programId}`;
-    await app.pgSql!`DELETE FROM genres WHERE name LIKE 'itest-up:%'`;
+  describe("queue delivery (BullMQ producer ↔ consumer)", () => {
+    let worker: Worker<ExtractionJobData> | undefined;
+    afterAll(async () => {
+      await worker?.close();
+    });
+
+    /** Resolves when the worker reports this job done; rejects once its retries are spent. */
+    const settled = (w: Worker<ExtractionJobData>, jobId: string) =>
+      new Promise<void>((resolve, reject) => {
+        w.on("completed", (job) => {
+          if (job.id === jobId) resolve();
+        });
+        w.on("failed", (job, err) => {
+          if (job?.id === jobId && job.attemptsMade >= (job.opts.attempts ?? 1)) reject(err);
+        });
+      });
+
+    it("complete() enqueues a job the worker processes to ready", async () => {
+      const { uploadID } = await upload(makeZip(validBundle()));
+
+      // The producer's job is addressable by the upload id under our prefix.
+      const connection = createQueueRedis(REDIS_URL!);
+      const queue = new Queue<ExtractionJobData>(EXTRACTION_QUEUE, { connection, prefix: QUEUE_PREFIX });
+      try {
+        const job = await queue.getJob(uploadID);
+        expect(job).toBeDefined();
+        expect(job!.name).toBe("extract");
+        expect(job!.data).toEqual({ uploadId: uploadID });
+        expect(job!.opts.attempts).toBe(3);
+      } finally {
+        await queue.close();
+        await connection.quit();
+      }
+
+      // A real consumer, on the same prefix, does the rest.
+      worker = createExtractionWorker(REDIS_URL!, { db: app.db!, storage }, { prefix: QUEUE_PREFIX });
+      const done = settled(worker, uploadID);
+      await worker.waitUntilReady();
+      await done;
+
+      const status = await statusOf(uploadID);
+      expect(status.status).toBe("ready");
+      expect(status.durationSec).toBe(12);
+    }, 30_000);
+
+    it("retries a transient failure through the queue and succeeds", async () => {
+      const zip = makeZip(validBundle());
+      const checksum = createHash("sha256").update(zip).digest("hex");
+      const init = await app.inject({
+        method: "POST",
+        url: "/api/v1/uploads",
+        headers: authed,
+        payload: { fileName: "bundle.zip", byteSize: zip.length, checksum },
+      });
+      const { uploadID, uploadURL } = init.json<{ uploadID: string; uploadURL: string }>();
+      await fetch(uploadURL, { method: "PUT", body: new Uint8Array(zip) });
+
+      // Enqueue with the production options except a fast backoff, and let a
+      // worker whose storage fails once consume it.
+      const flaky = new FlakyStorage(storageConfigFromEnv(app.env)!, 1);
+      await worker?.close();
+      worker = createExtractionWorker(REDIS_URL!, { db: app.db!, storage: flaky }, { prefix: QUEUE_PREFIX });
+      const done = settled(worker, uploadID);
+
+      await app.pgSql!`UPDATE uploads SET status = 'queued' WHERE id = ${uploadID}`;
+      const connection = createQueueRedis(REDIS_URL!);
+      const queue = new Queue<ExtractionJobData>(EXTRACTION_QUEUE, { connection, prefix: QUEUE_PREFIX });
+      try {
+        await queue.add(
+          "extract",
+          { uploadId: uploadID },
+          { jobId: uploadID, attempts: 3, backoff: { type: "fixed", delay: 100 } },
+        );
+        await done;
+        const job = await queue.getJob(uploadID);
+        // One failed attempt, then the retry that published the upload.
+        expect(job!.attemptsMade).toBe(2);
+      } finally {
+        await queue.close();
+        await connection.quit();
+      }
+
+      const status = await statusOf(uploadID);
+      expect(status.status).toBe("ready");
+      expect(status.durationSec).toBe(12);
+    }, 30_000);
   });
 });

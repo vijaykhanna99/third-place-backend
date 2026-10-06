@@ -59,6 +59,12 @@ const envSchema = z.object({
   MEDIA_BASE_URL: optional(z.string().url()),
 
   // extraction worker (step 6.5)
+  /**
+   * Namespace for the job queue's Redis keys (BullMQ `prefix`, default "bull").
+   * Lets several deployments — or a test run next to a developer's worker —
+   * share one Redis without seeing each other's jobs.
+   */
+  QUEUE_PREFIX: optional(z.string().regex(/^[A-Za-z0-9_-]+$/)),
   /** Where archives are downloaded during extraction. Defaults to the OS temp dir. */
   SCRATCH_DIR: optional(z.string()),
   /** How long the worker waits for in-flight jobs on SIGTERM before forcing the close. */

@@ -54,13 +54,14 @@ await sweepScratch(scratchDir, log);
 // Producer handle for re-enqueueing recovered uploads. A recovered upload gets
 // a fresh job id: the original id may still sit in the completed/failed sets,
 // where BullMQ would silently drop a duplicate.
-const { queue, connection: queueConnection } = createExtractionQueue(env.REDIS_URL);
+const queueOptions = { prefix: env.QUEUE_PREFIX };
+const { queue, connection: queueConnection } = createExtractionQueue(env.REDIS_URL, queueOptions);
 attachRedisLogging(queueConnection, log, "extraction-queue");
 const requeue = async (uploadId: string) => {
   await queue.add("extract", { uploadId }, { jobId: `${uploadId}:recovery:${String(Date.now())}` });
 };
 
-const worker = createExtractionWorker(env.REDIS_URL, deps);
+const worker = createExtractionWorker(env.REDIS_URL, deps, queueOptions);
 
 worker.on("failed", (job, err) => {
   console.error(
@@ -92,6 +93,7 @@ const sweepTimer = setInterval(() => void sweep(), Math.min(env.UPLOAD_STUCK_AFT
 log.info(
   {
     scratchDir,
+    queuePrefix: env.QUEUE_PREFIX ?? "bull",
     stuckAfterMs: env.UPLOAD_STUCK_AFTER_MS,
     maxEntryBytes: env.UPLOAD_MAX_ENTRY_BYTES,
     shutdownTimeoutMs: env.WORKER_SHUTDOWN_TIMEOUT_MS,

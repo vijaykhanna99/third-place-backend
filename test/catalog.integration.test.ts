@@ -4,6 +4,7 @@ import { loadEnvFrom } from "../src/config/env.js";
 import { buildApp } from "../src/app.js";
 import { AuthService } from "../src/modules/auth/service.js";
 import { uploads } from "../src/db/schema/index.js";
+import { expectContract } from "./helpers/contract.js";
 
 /**
  * Catalog integration tests — require real Postgres. Run via:
@@ -55,6 +56,8 @@ describe.runIf(Boolean(DB_URL))("catalog integration", () => {
         DATABASE_URL: DB_URL!,
         JWT_SIGNING_KEY: KEY,
         APP_KEYS: `${APP_KEY},rotating-second-key`,
+        // Stream URLs are absolute URIs on the public media origin (contract).
+        MEDIA_BASE_URL: "https://media.test.example",
       }),
     );
     await app.pgSql!`DELETE FROM playback_events WHERE quality = 'itest-cat'`;
@@ -163,6 +166,8 @@ describe.runIf(Boolean(DB_URL))("catalog integration", () => {
 
     const ok = await app.inject({ method: "GET", url: "/api/v1/genres", headers: withKey });
     expect(ok.statusCode).toBe(200);
+    expectContract("GET", "/api/v1/genres", 200, ok.json());
+    expectContract("GET", "/api/v1/genres", 403, noKey.json());
 
     // Rotation: the second configured key is accepted too.
     const rotated = await app.inject({
@@ -234,6 +239,7 @@ describe.runIf(Boolean(DB_URL))("catalog integration", () => {
       ["Studio Session"],
     ]);
     expect(res.statusCode).toBe(200);
+    expectContract("POST", "/api/v1/programs", 200, res.json());
     const body = res.json<{
       id: string;
       viewCount: number;
@@ -349,6 +355,7 @@ describe.runIf(Boolean(DB_URL))("catalog integration", () => {
       headers: withKey,
     });
     expect(one.statusCode).toBe(200);
+    expectContract("GET", "/api/v1/programs/{programID}", 200, one.json());
     const seasons = one.json<{ season: { number: number }[] }>().season;
     expect(seasons).toHaveLength(1);
     expect(seasons[0]!.number).toBe(2);
@@ -359,6 +366,7 @@ describe.runIf(Boolean(DB_URL))("catalog integration", () => {
       headers: withKey,
     });
     expect(missing.statusCode).toBe(404);
+    expectContract("GET", "/api/v1/programs/{programID}", 404, missing.json());
   });
 
   it("searches episodes within a program, and general search groups by program", async () => {
@@ -373,6 +381,7 @@ describe.runIf(Boolean(DB_URL))("catalog integration", () => {
       headers: withKey,
     });
     expect(scoped.statusCode).toBe(200);
+    expectContract("GET", "/api/v1/programs/{programID}/episodes/search", 200, scoped.json());
     const scopedBody = scoped.json<{ total: number; episodes: { title: string }[] }>();
     expect(scopedBody.episodes).toHaveLength(1);
     expect(scopedBody.episodes[0]!.title).toBe("Tokyo Dome Finale");
@@ -383,6 +392,7 @@ describe.runIf(Boolean(DB_URL))("catalog integration", () => {
       url: `/api/v1/search?query=${encodeURIComponent("Searchable " + String(RUN))}`,
       headers: withKey,
     });
+    expectContract("GET", "/api/v1/search", 200, byProgram.json());
     const progHit = byProgram
       .json<{ programs: { id: string; matchedBy: string; episodes: unknown[] }[] }>()
       .programs.find((p) => p.id === id)!;
@@ -427,6 +437,7 @@ describe.runIf(Boolean(DB_URL))("catalog integration", () => {
       url: `/api/v1/genres/${genreId}/programs?limit=2`,
       headers: withKey,
     });
+    expectContract("GET", "/api/v1/genres/{genreID}/programs", 200, first.json());
     const page1 = first.json<{
       total: number;
       nextCursor: string | null;
@@ -524,6 +535,7 @@ describe.runIf(Boolean(DB_URL))("catalog integration", () => {
       headers: authed(),
     });
     expect(del.statusCode).toBe(200);
+    expectContract("POST", "/api/v1/programs/{programID}/delete", 200, del.json());
     expect(del.json<{ deleted: boolean; episodeID: null }>()).toMatchObject({
       targetType: "program",
       deleted: true,

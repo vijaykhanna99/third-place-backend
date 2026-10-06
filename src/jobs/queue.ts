@@ -9,14 +9,28 @@ export interface ExtractionJobData {
   uploadId: string;
 }
 
+export interface QueueOptions {
+  /** Redis key namespace (env QUEUE_PREFIX); BullMQ's default "bull" when unset. */
+  prefix?: string | undefined;
+}
+
+/** Only the defined options are passed on: BullMQ treats `prefix: undefined` as a prefix. */
+function prefixOption(opts: QueueOptions): { prefix?: string } {
+  return opts.prefix === undefined ? {} : { prefix: opts.prefix };
+}
+
 /**
  * Producer side. Uses a dedicated connection because BullMQ requires
  * `maxRetriesPerRequest: null`, which the API-path Redis client does not use.
  */
-export function createExtractionQueue(redisUrl: string): { queue: Queue; connection: Redis } {
+export function createExtractionQueue(
+  redisUrl: string,
+  opts: QueueOptions = {},
+): { queue: Queue; connection: Redis } {
   const connection = createQueueRedis(redisUrl);
   const queue = new Queue(EXTRACTION_QUEUE, {
     connection,
+    ...prefixOption(opts),
     defaultJobOptions: {
       attempts: 3,
       backoff: { type: "exponential", delay: 5_000 },
@@ -28,7 +42,11 @@ export function createExtractionQueue(redisUrl: string): { queue: Queue; connect
 }
 
 /** Consumer side — run in its own process (`pnpm worker`). */
-export function createExtractionWorker(redisUrl: string, deps: ExtractionDeps): Worker {
+export function createExtractionWorker(
+  redisUrl: string,
+  deps: ExtractionDeps,
+  opts: QueueOptions = {},
+): Worker<ExtractionJobData> {
   const connection = createQueueRedis(redisUrl);
   return new Worker<ExtractionJobData>(
     EXTRACTION_QUEUE,
@@ -41,6 +59,7 @@ export function createExtractionWorker(redisUrl: string, deps: ExtractionDeps): 
     },
     {
       connection,
+      ...prefixOption(opts),
       // Extraction is IO- and memory-heavy; a small concurrency keeps one
       // worker from thrashing on several multi-GB archives at once.
       concurrency: 2,
