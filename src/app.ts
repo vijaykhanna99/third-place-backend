@@ -14,6 +14,8 @@ import { Storage, storageConfigFromEnv } from "./lib/storage.js";
 import { createExtractionQueue } from "./jobs/queue.js";
 import multipart from "@fastify/multipart";
 import { registerCatalogRoutes } from "./modules/catalog/routes.js";
+import { registerMediaRoutes } from "./modules/media/routes.js";
+import { StreamUrlIssuer } from "./modules/media/stream-urls.js";
 
 /**
  * Builds the Fastify application. Kept separate from the listener (index.ts)
@@ -77,7 +79,18 @@ export function buildApp(env: Env): FastifyInstance {
     registerAuthGuard(app);
     registerAppKeyGuard(app);
     registerAuthRoutes(app);
+
+    // Stream tokens (spec §5.2). Unsigned URLs without a secret: local dev
+    // against MinIO has no Worker to validate them; production requires it.
+    app.decorate(
+      "streamUrls",
+      new StreamUrlIssuer(env.MEDIA_BASE_URL ?? "", env.STREAM_TOKEN_SECRET, env.STREAM_TOKEN_TTL_SEC),
+    );
+    if (!env.STREAM_TOKEN_SECRET) {
+      app.log.warn("stream URLs are unsigned: STREAM_TOKEN_SECRET not configured");
+    }
     registerCatalogRoutes(app);
+    registerMediaRoutes(app);
 
     // Uploads need object storage; without it the endpoints simply don't exist
     // rather than failing at request time.
@@ -127,7 +140,6 @@ export function buildApp(env: Env): FastifyInstance {
     app.log.warn("auth routes disabled: DATABASE_URL and/or JWT_SIGNING_KEY not configured");
   }
 
-  // step 7: media module routes (/api/v1/episodes/{id}/stream)
   // step 8: metrics module routes (/api/v1/metrics/playback)
 
   return app;
@@ -136,6 +148,7 @@ export function buildApp(env: Env): FastifyInstance {
 declare module "fastify" {
   interface FastifyInstance {
     env: Env;
+    streamUrls: StreamUrlIssuer;
     storage?: Storage;
     uploadService?: UploadService;
     db?: Db;

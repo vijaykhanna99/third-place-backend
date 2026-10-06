@@ -55,6 +55,7 @@ describe("loadEnvFrom", () => {
       "JWT_SIGNING_KEY",
       "APP_KEYS",
       "MEDIA_BASE_URL",
+      "STREAM_TOKEN_SECRET",
       "R2_ACCESS_KEY_ID",
       "R2_SECRET_ACCESS_KEY",
       "R2_BUCKET_MEDIA",

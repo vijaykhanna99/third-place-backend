@@ -32,8 +32,9 @@ info:
     ## Auth model (v1)
     - **Operator endpoints** (CMS, uploads): `Authorization: Bearer {accessToken}`.
     - **Public reads** (catalog, search, stream, metrics): `X-App-Key` header.
-    - **Media requests to the CDN** (playlists/fragments): short-lived signed token in the URL —
-      out of scope for this API contract; see spec §5.
+    - **Media requests to the CDN** (playlists/fragments): short-lived signed token in the URL
+      (`?token=`), validated by the edge Worker (`edge-worker/`) — out of scope for this API
+      contract beyond the `streamURL` fields; see spec §5 and `edge-worker/README.md`.
     - Registration is deployed but externally closed in v1 → `403 registration_closed`.
 
   contact:
@@ -676,8 +677,19 @@ paths:
       tags: [media]
       summary: Get a fresh stream URL for an episode
       description: |
-        Returns the CDN master-playlist URL carrying a fresh 15-minute prefix-scoped token
-        (spec §5.3). Exists so clients can refresh mid-playback without re-fetching the program.
+        Returns every camera angle's CDN master-playlist URL, each carrying a fresh
+        15-minute prefix-scoped token (spec §5.3). Exists so clients can refresh
+        mid-playback without re-fetching the program.
+
+        Each `streamURL` is `{mediaOrigin}/uploads/{uploadID}/index.m3u8?token={token}`.
+        The token is scoped to that angle's `uploads/{uploadID}/` prefix and expires at
+        `expiresAt`; the edge Worker validates it on every media request and rewrites
+        playlist URIs so fragment fetches carry it automatically. Hand the URL to
+        AVPlayer as is. Before `expiresAt` passes, call this endpoint again and
+        replace the player item's URL — tokens are not refreshed by the CDN.
+
+        A logically deleted episode (or one whose program is deleted) answers `404`
+        immediately; already-issued tokens expire within the TTL.
       security: [{ AppKey: [] }]
       parameters:
         - $ref: "#/components/parameters/EpisodeID"
