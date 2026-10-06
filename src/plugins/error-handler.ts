@@ -17,6 +17,12 @@ export function registerErrorHandler(app: FastifyInstance): void {
     // Fastify built-in errors (body parse failures, schema validation, etc.)
     const known = err as { statusCode?: unknown; message?: unknown };
     const status = typeof known.statusCode === "number" ? known.statusCode : 500;
+    if (status < 500 && req.routeOptions.config.dropInvalidBody) {
+      // Telemetry sink (spec §9): an unparseable body is an invalid payload,
+      // and invalid payloads are dropped with 202, never reported.
+      void reply.status(202).send();
+      return;
+    }
     if (status < 500) {
       const code = status === 429 ? "rate_limited" : "validation_failed";
       const message = typeof known.message === "string" ? known.message : "Bad request";

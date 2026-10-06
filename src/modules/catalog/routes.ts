@@ -14,7 +14,8 @@ export function registerCatalogRoutes(app: FastifyInstance): void {
   // one camera angle).
   const service = new CatalogService(app.db!, (uploadId) => app.streamUrls.issue(uploadId).url);
 
-  const publicRead = { preValidation: app.requireAppKey() };
+  // Rate limit first (cheap, protects the gate itself), then the app key.
+  const publicRead = { preValidation: [app.publicRateLimit(), app.requireAppKey()] };
   const operatorOnly = { preValidation: app.requireRole("operator") };
 
   // ------------------------------------------------------------ reads

@@ -10,7 +10,7 @@ export function registerMediaRoutes(app: FastifyInstance): void {
   app.get(
     "/api/v1/episodes/:episodeID/stream",
     {
-      preValidation: app.requireAppKey(),
+      preValidation: [app.publicRateLimit(), app.requireAppKey()],
       schema: {
         params: { type: "object", required: ["episodeID"], properties: { episodeID: uuid } },
       },

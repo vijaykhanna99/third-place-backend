@@ -131,6 +131,9 @@ const { search: _episodeSearch, ...episodeCols } = getTableColumns(episodes);
  */
 const MAX_EPISODES_PER_SEARCH_RESULT = 20;
 
+/** The pool handle or a transaction handle — both expose the query builders. */
+type DbOrTx = Db | Parameters<Parameters<Db["transaction"]>[0]>[0];
+
 /** Row shapes as actually selected (i.e. without the `search` tsvector). */
 type ProgramRow = Omit<typeof programs.$inferSelect, "search">;
 type EpisodeRow = Omit<typeof episodes.$inferSelect, "search">;
@@ -684,6 +687,21 @@ export class CatalogService {
     }
   }
 
+  /**
+   * Janitor bookkeeping (spec §7.3/§8.5): an upload that loses its episode
+   * records when, so its media is kept for the 30-day retention from that
+   * moment; re-attaching clears the mark.
+   */
+  private static async markDetached(tx: DbOrTx, uploadIds: string[], at: Date): Promise<void> {
+    if (uploadIds.length === 0) return;
+    await tx.update(uploads).set({ detachedAt: at }).where(inArray(uploads.id, uploadIds));
+  }
+
+  private static async markAttached(tx: DbOrTx, uploadIds: string[]): Promise<void> {
+    if (uploadIds.length === 0) return;
+    await tx.update(uploads).set({ detachedAt: null }).where(inArray(uploads.id, uploadIds));
+  }
+
   /** Maps the DB's own uniqueness guarantees onto the contract's 4xx codes. */
   private static rethrowConstraint(this: void, err: unknown): never {
     const cause = (err as { cause?: { code?: string; constraint_name?: string } }).cause;
@@ -772,6 +790,10 @@ export class CatalogService {
                 sortOrder: i,
               })),
             ),
+          );
+          await CatalogService.markAttached(
+            tx,
+            s.episodes.flatMap((e) => e.streams.map((st) => st.uploadID)),
           );
         }
       }
@@ -888,7 +910,10 @@ export class CatalogService {
             // Replace the full angle set. Delete-then-insert inside the tx is
             // safe against the UNIQUE(upload_id): re-sending the current set
             // frees the rows before re-claiming them.
-            await tx.delete(episodeStreams).where(eq(episodeStreams.episodeId, episodeID));
+            const previous = await tx
+              .delete(episodeStreams)
+              .where(eq(episodeStreams.episodeId, episodeID))
+              .returning({ uploadId: episodeStreams.uploadId });
             await tx.insert(episodeStreams).values(
               streams.map((st, i) => ({
                 episodeId: episodeID,
@@ -897,6 +922,13 @@ export class CatalogService {
                 sortOrder: i,
               })),
             );
+            const kept = new Set(streams.map((st) => st.uploadID));
+            await CatalogService.markDetached(
+              tx,
+              previous.map((p) => p.uploadId).filter((id) => !kept.has(id)),
+              new Date(),
+            );
+            await CatalogService.markAttached(tx, [...kept]);
           }
         }
         return changed;
@@ -938,16 +970,25 @@ export class CatalogService {
 
       // Release the episodes' stream claims: with the mapping rows gone, the
       // uploads become "unattached" and the janitor's storage-cleanup rule
-      // applies. (Episode restore is not a v1 feature, so nothing needs them.)
-      await tx.delete(episodeStreams).where(
-        inArray(
-          episodeStreams.episodeId,
-          tx
-            .select({ id: episodes.id })
-            .from(episodes)
-            .innerJoin(seasons, eq(episodes.seasonId, seasons.id))
-            .where(eq(seasons.programId, programId)),
-        ),
+      // applies after the 30-day retention counted from detached_at.
+      // (Episode restore is not a v1 feature, so nothing needs them.)
+      const released = await tx
+        .delete(episodeStreams)
+        .where(
+          inArray(
+            episodeStreams.episodeId,
+            tx
+              .select({ id: episodes.id })
+              .from(episodes)
+              .innerJoin(seasons, eq(episodes.seasonId, seasons.id))
+              .where(eq(seasons.programId, programId)),
+          ),
+        )
+        .returning({ uploadId: episodeStreams.uploadId });
+      await CatalogService.markDetached(
+        tx,
+        released.map((r) => r.uploadId),
+        deletedAt,
       );
     });
 
@@ -973,7 +1014,15 @@ export class CatalogService {
     await this.db.transaction(async (tx) => {
       await tx.update(episodes).set({ deletedAt }).where(eq(episodes.id, episodeId));
       // Release the stream claims (see deleteProgram).
-      await tx.delete(episodeStreams).where(eq(episodeStreams.episodeId, episodeId));
+      const released = await tx
+        .delete(episodeStreams)
+        .where(eq(episodeStreams.episodeId, episodeId))
+        .returning({ uploadId: episodeStreams.uploadId });
+      await CatalogService.markDetached(
+        tx,
+        released.map((r) => r.uploadId),
+        deletedAt,
+      );
     });
 
     return {

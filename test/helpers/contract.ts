@@ -53,7 +53,11 @@ function responseSchemaPointer(method: string, path: string, status: number): st
   if (at(operation) === undefined) throw new Error(`${method} ${path} is not in ${DOC_KEY}`);
   let response = `${operation}/responses/${String(status)}`;
   const node = at(response) as { $ref?: string } | undefined;
-  if (node === undefined) throw new Error(`${method} ${path} declares no ${String(status)} response`);
+  if (node === undefined) {
+    // The conventions section declares 429 and 500 globally rather than per operation.
+    if (status === 429 || status === 500) return "/components/schemas/Error";
+    throw new Error(`${method} ${path} declares no ${String(status)} response`);
+  }
   if (typeof node.$ref === "string") response = node.$ref.replace(/^#/, "");
   const schema = `${response}/content/${escape("application/json")}/schema`;
   if (at(schema) === undefined) {

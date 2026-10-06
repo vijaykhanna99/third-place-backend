@@ -31,6 +31,15 @@ export const uploads = pgTable(
     processingStartedAt: timestamp("processing_started_at", { withTimezone: true }),
     /** Times this upload was pulled back from a stuck `processing` state; capped so a crash loop ends in `failed`. */
     recoveryCount: integer("recovery_count").notNull().default(0),
+    /**
+     * When the upload last lost its episode (episode/program deleted, angle set
+     * replaced). Null while attached or never attached. The janitor keeps a
+     * detached upload's media for 30 days from here (spec §7.3), versus 14 days
+     * for a `ready` upload that was never attached (spec §8.5).
+     */
+    detachedAt: timestamp("detached_at", { withTimezone: true }),
+    /** When the janitor removed the temp archive (`r2_key`), so it is not re-deleted every sweep. */
+    tempDeletedAt: timestamp("temp_deleted_at", { withTimezone: true }),
     createdBy: uuid("created_by")
       .notNull()
       .references(() => accounts.id),

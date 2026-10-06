@@ -827,6 +827,10 @@ describe.runIf(Boolean(DB_URL))("catalog integration", () => {
       url: `/api/v1/episodes/${episodeId}/delete`,
       headers: authed(),
     });
+    // Detachment is recorded for the janitor's 30-day retention.
+    // (drizzle keeps the raw client's timestamps as strings)
+    const [detached] = await app.pgSql!`SELECT detached_at FROM uploads WHERE id = ${upload}`;
+    expect(detached!.detached_at).toEqual(expect.any(String));
 
     // The upload is unclaimed now — a new program can use it.
     const reuse = await app.inject({
@@ -857,6 +861,44 @@ describe.runIf(Boolean(DB_URL))("catalog integration", () => {
       },
     });
     expect(reuse.statusCode).toBe(200);
+    // ...and re-attaching clears the mark.
+    const [reattached] = await app.pgSql!`SELECT detached_at FROM uploads WHERE id = ${upload}`;
+    expect(reattached!.detached_at).toBeNull();
+  });
+
+  it("marks uploads detached when an angle replacement drops them, and when a program is deleted", async () => {
+    const created = (await createProgram(`itest-cat:Detach ${RUN}`, [["Swap"]])).json<{
+      id: string;
+      season: { episodes: { id: string }[] }[];
+    }>();
+    const episodeId = created.season[0]!.episodes[0]!.id;
+    const [orig] = await app.pgSql!`SELECT upload_id FROM episode_streams WHERE episode_id = ${episodeId}`;
+    const original = orig!.upload_id as string;
+    const replacement = await seedUpload();
+
+    const swapped = await app.inject({
+      method: "POST",
+      url: `/api/v1/programs/${created.id}/update`,
+      headers: authed(),
+      payload: { episodes: [{ episodeID: episodeId, streams: [{ name: "Main", uploadID: replacement }] }] },
+    });
+    expect(swapped.statusCode).toBe(200);
+    const marks = async (id: string) =>
+      (await app.pgSql!`SELECT detached_at FROM uploads WHERE id = ${id}`)[0]!.detached_at as string | null;
+    expect(await marks(original)).toEqual(expect.any(String));
+    expect(await marks(replacement)).toBeNull();
+
+    // Re-sending the same set is a no-op for the mark.
+    await app.inject({
+      method: "POST",
+      url: `/api/v1/programs/${created.id}/update`,
+      headers: authed(),
+      payload: { episodes: [{ episodeID: episodeId, streams: [{ name: "Main", uploadID: replacement }] }] },
+    });
+    expect(await marks(replacement)).toBeNull();
+
+    await app.inject({ method: "POST", url: `/api/v1/programs/${created.id}/delete`, headers: authed() });
+    expect(await marks(replacement)).toEqual(expect.any(String));
   });
 
   it("rejects duplicate season/episode numbers with a 4xx, not a 500", async () => {

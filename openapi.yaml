@@ -25,6 +25,9 @@ info:
       `500 internal_error` (opaque; details never leak), and any operation may return
       `429 rate_limited` under the global per-IP limits (spec §2.4). Per-operation `429`s
       are documented only where a stricter dedicated limit applies (login, register).
+      Public reads (catalog, search, stream, metrics) are limited to 60 requests per
+      minute per client IP, burstable; every response carries `RateLimit-Limit` and
+      `RateLimit-Remaining`, and a `429` carries `Retry-After` (seconds).
     - **Gate order:** authentication and the app-key check run BEFORE request validation.
       An unauthenticated call to a protected endpoint returns `401`/`403` even when the
       request itself is malformed — request shape is never disclosed to unauthorized callers.
@@ -76,25 +79,45 @@ paths:
       operationId: getHealth
       tags: [health]
       summary: Liveness check (no auth, no app key)
+      description: |
+        Always `200` while the process is alive; a dependency outage shows as
+        `status: degraded` but never fails the probe (a restart would not fix it).
+        Components without a configured URL report `skipped`.
       responses:
         "200":
-          description: Service is live. `db`/`redis` are `skipped` until step 3 wires the clients.
+          description: Service is live.
           content:
             application/json:
-              schema:
-                type: object
-                required: [status, checks]
-                properties:
-                  status: { type: string, enum: [ok, degraded] }
-                  checks:
-                    type: object
-                    required: [db, redis]
-                    properties:
-                      db: { type: string, enum: [ok, down, skipped] }
-                      redis: { type: string, enum: [ok, down, skipped] }
+              schema: { $ref: "#/components/schemas/HealthChecks" }
               example:
                 status: ok
                 checks: { db: ok, redis: ok }
+
+  /readyz:
+    get:
+      operationId: getReadiness
+      tags: [health]
+      summary: Readiness check (no auth, no app key)
+      description: |
+        `200` only when every configured dependency (database, Redis) answers; `503`
+        otherwise, so the load balancer stops routing to this instance until they return.
+      responses:
+        "200":
+          description: Ready to serve.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReadinessChecks" }
+              example:
+                status: ready
+                checks: { db: ok, redis: ok }
+        "503":
+          description: A dependency is down; do not route traffic here.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReadinessChecks" }
+              example:
+                status: not_ready
+                checks: { db: down, redis: ok }
 
   /api/v1/auth/register:
     post:
@@ -1181,6 +1204,27 @@ components:
           properties:
             code: { type: string }
             message: { type: string }
+
+    HealthChecks:
+      type: object
+      required: [status, checks]
+      properties:
+        status: { type: string, enum: [ok, degraded] }
+        checks: { $ref: "#/components/schemas/DependencyChecks" }
+
+    ReadinessChecks:
+      type: object
+      required: [status, checks]
+      properties:
+        status: { type: string, enum: [ready, not_ready] }
+        checks: { $ref: "#/components/schemas/DependencyChecks" }
+
+    DependencyChecks:
+      type: object
+      required: [db, redis]
+      properties:
+        db: { type: string, enum: [ok, down, skipped] }
+        redis: { type: string, enum: [ok, down, skipped] }
 
     RegisterRequest:
       type: object

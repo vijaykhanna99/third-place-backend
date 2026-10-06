@@ -43,6 +43,13 @@
       "when": 1791306705229,
       "tag": "0005_processing-recovery",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1791310132498,
+      "tag": "0006_janitor-bookkeeping",
+      "breakpoints": true
     }
   ]
 }

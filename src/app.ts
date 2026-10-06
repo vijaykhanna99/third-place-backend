@@ -13,9 +13,19 @@ import { UploadService } from "./modules/uploads/service.js";
 import { Storage, storageConfigFromEnv } from "./lib/storage.js";
 import { createExtractionQueue } from "./jobs/queue.js";
 import multipart from "@fastify/multipart";
+import helmet from "@fastify/helmet";
 import { registerCatalogRoutes } from "./modules/catalog/routes.js";
 import { registerMediaRoutes } from "./modules/media/routes.js";
 import { StreamUrlIssuer } from "./modules/media/stream-urls.js";
+import { registerMetricsRoutes } from "./modules/metrics/routes.js";
+import { registerPublicRateLimit } from "./plugins/rate-limit.js";
+
+/**
+ * Largest JSON body any endpoint accepts. The biggest legitimate payload is a
+ * program with many seasons of 5,000-character descriptions, far below this;
+ * routes with smaller needs (telemetry) set their own bodyLimit.
+ */
+export const BODY_LIMIT_BYTES = 1024 * 1024;
 
 /**
  * Builds the Fastify application. Kept separate from the listener (index.ts)
@@ -38,6 +48,22 @@ export function buildApp(env: Env): FastifyInstance {
     // Only honour X-Forwarded-For from explicitly trusted hops (see env.ts).
     // Defaults to false so a directly-exposed listener can't be spoofed.
     trustProxy: env.trustProxy,
+    bodyLimit: BODY_LIMIT_BYTES,
+    // Slow-loris protection: a request that cannot deliver its headers and
+    // body in this time (a 10 MB thumbnail needs ~1.4 Mbps) is not a native
+    // client on a bad link, it is a socket being held open.
+    requestTimeout: 60_000,
+  });
+
+  // Security headers on every response (CSP et al. are harmless on a JSON API
+  // and protect the error pages a browser might render). CORS stays closed
+  // (spec §2.5): no CORS plugin is registered at all.
+  void app.register(helmet, {
+    global: true,
+    // A JSON API embeds nothing; the strictest policy costs nothing here.
+    contentSecurityPolicy: { directives: { defaultSrc: ["'none'"], frameAncestors: ["'none'"] } },
+    crossOriginResourcePolicy: { policy: "same-origin" },
+    strictTransportSecurity: { maxAge: 63_072_000, includeSubDomains: true, preload: true },
   });
 
   app.decorate("env", env);
@@ -78,6 +104,7 @@ export function buildApp(env: Env): FastifyInstance {
     }
     registerAuthGuard(app);
     registerAppKeyGuard(app);
+    registerPublicRateLimit(app);
     registerAuthRoutes(app);
 
     // Stream tokens (spec §5.2). Unsigned URLs without a secret: local dev
@@ -91,6 +118,7 @@ export function buildApp(env: Env): FastifyInstance {
     }
     registerCatalogRoutes(app);
     registerMediaRoutes(app);
+    registerMetricsRoutes(app);
 
     // Uploads need object storage; without it the endpoints simply don't exist
     // rather than failing at request time.
@@ -139,8 +167,6 @@ export function buildApp(env: Env): FastifyInstance {
   } else {
     app.log.warn("auth routes disabled: DATABASE_URL and/or JWT_SIGNING_KEY not configured");
   }
-
-  // step 8: metrics module routes (/api/v1/metrics/playback)
 
   return app;
 }
