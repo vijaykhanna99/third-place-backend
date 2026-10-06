@@ -1,4 +1,6 @@
 import type { FastifyInstance } from "fastify";
+import { mediaPrefixFor } from "../../jobs/keys.js";
+import { publicMediaUrl } from "../../lib/media-url.js";
 import { CatalogService, type CreateProgramInput, type UpdateProgramInput } from "./service.js";
 
 const uuid = { type: "string", format: "uuid" } as const;
@@ -10,11 +12,10 @@ const limitParam = { type: "integer", minimum: 1, maximum: 100, default: 20 } as
  */
 export function registerCatalogRoutes(app: FastifyInstance): void {
   // Stream URLs are minted by the media module in step 7; until then the
-  // catalog emits the canonical unsigned path so the shape is already right.
+  // catalog emits the canonical unsigned URL so the shape is already right.
   // Storage is keyed per UPLOAD (one upload = one camera angle).
-  const service = new CatalogService(
-    app.db!,
-    (uploadId) => `${app.env.MEDIA_BASE_URL ?? ""}/uploads/${uploadId}/index.m3u8`,
+  const service = new CatalogService(app.db!, (uploadId) =>
+    publicMediaUrl(app.env.MEDIA_BASE_URL ?? "", `${mediaPrefixFor(uploadId)}/index.m3u8`),
   );
 
   const publicRead = { preValidation: app.requireAppKey() };

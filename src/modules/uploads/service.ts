@@ -5,11 +5,19 @@ import { uuidv7 } from "uuidv7";
 import type { Db } from "../../db/client.js";
 import { images, uploads } from "../../db/schema/index.js";
 import { errors } from "../../lib/errors.js";
+import { publicMediaUrl } from "../../lib/media-url.js";
 import type { Storage } from "../../lib/storage.js";
 import { mediaPrefixFor, tempKeyFor } from "../../jobs/extraction.js";
 
 /** Presigned PUT lifetime — long enough for a multi-GB upload on a poor link. */
 const UPLOAD_URL_TTL_SEC = 6 * 60 * 60;
+
+/**
+ * Largest archive an upload may declare: the handshake issues ONE presigned
+ * PUT, and both R2 and S3 cap a single PutObject at 5 GiB. Accepting more
+ * would let an operator upload for hours into a request storage must refuse.
+ */
+export const UPLOAD_MAX_BYTES = 5 * 1024 * 1024 * 1024;
 
 export const IMAGE_LIMITS = {
   maxBytes: 10 * 1024 * 1024,
@@ -38,8 +46,9 @@ export class UploadService {
     return {
       uploadID: row.id,
       status: row.status,
-      // Unsigned canonical URL; signed stream tokens arrive in step 7.
-      playlistURL: row.playlistKey ? `${this.mediaBaseUrl}/${row.playlistKey}` : null,
+      // Unsigned canonical URL on the public media origin; signed stream
+      // tokens are minted by the media module (step 7) for playback.
+      playlistURL: row.playlistKey ? publicMediaUrl(this.mediaBaseUrl, row.playlistKey) : null,
       durationSec: row.durationSec,
       error: row.error,
     };
@@ -192,7 +201,7 @@ export class UploadService {
     const id = uuidv7();
     const key = `media/images/${id}${ext}`;
     await this.storage.put(key, file.buffer, { contentType: file.mimetype });
-    const url = `${this.mediaBaseUrl}/${key}`;
+    const url = publicMediaUrl(this.mediaBaseUrl, key);
 
     await this.db.insert(images).values({
       id,

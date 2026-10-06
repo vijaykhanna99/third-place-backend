@@ -16,7 +16,7 @@ info:
     - Every error response has the shape `{ "error": { "code", "message" } }`. Codes are snake_case
       (`validation_failed`, `unauthenticated`, `invalid_token`, `forbidden`, `app_key_required`,
       `registration_closed`, `not_found`, `handle_taken`, `upload_not_ready`, `upload_already_attached`,
-      `checksum_mismatch`, `rate_limited`, `internal_error`).
+      `checksum_mismatch`, `rate_limited`, `service_unavailable`, `internal_error`).
     - `viewer.*` fields always return `false` in v1 (no end-user accounts).
     - `quality` enum: `uhd8k` | `uhd4k` | `hd` (device-facing labels are the client's concern).
     - **Multi-angle:** an episode carries 1..n named camera-angle `streams` (one upload per
@@ -894,6 +894,10 @@ paths:
         PUT must send exactly that many bytes. `checksum` is the SHA-256 of the
         archive; it is verified by the extraction worker while it streams the file.
 
+        `byteSize` is capped at 5 GiB (5368709120): the handshake issues a single
+        presigned `PUT`, and object storage accepts at most 5 GiB per `PutObject`.
+        Larger masters must be split into further angles or re-encoded.
+
         One upload carries ONE camera angle's HLS bundle: a ZIP with `index.m3u8`
         at its root, per-quality media playlists, fragments, and optional
         `subtitles/{lang}/` tracks.
@@ -907,14 +911,14 @@ paths:
               required: [fileName, byteSize, checksum]
               properties:
                 fileName: { type: string }
-                byteSize: { type: integer, minimum: 1, maximum: 10737418240 }
+                byteSize: { type: integer, minimum: 1, maximum: 5368709120 }
                 checksum:
                   type: string
                   description: SHA-256 of the ZIP, lowercase hex.
                   pattern: "^[a-f0-9]{64}$"
             example:
               fileName: neon-nights-s01e01-hls.zip
-              byteSize: 8589934592
+              byteSize: 4294967296
               checksum: 9f2b5c1e8d4a7b3c6e9f2b5c1e8d4a7b3c6e9f2b5c1e8d4a7b3c6e9f2b5c1e8d
       responses:
         "200":
@@ -979,6 +983,15 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
               example:
                 error: { code: checksum_mismatch, message: "Stored object does not match the declared size" }
+        "503":
+          description: |
+            Object storage or the extraction queue is unreachable. The upload is left
+            exactly as it was (`uploading`); call `complete` again once the dependency is back.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example:
+                error: { code: service_unavailable, message: "Object storage is unavailable; call complete again later" }
 
   /api/v1/uploads/{uploadID}:
     get:
@@ -997,7 +1010,7 @@ paths:
               example:
                 uploadID: 01890a5d-ac96-774b-b111-000000000801
                 status: ready
-                playlistURL: https://media.3rd-place.example/episodes/01890a5d-ac96-774b-b111-000000000301/index.m3u8
+                playlistURL: https://media.3rd-place.example/uploads/01890a5d-ac96-774b-b111-000000000801/index.m3u8
                 durationSec: 5400
                 error: null
         "401": { $ref: "#/components/responses/Unauthenticated" }
@@ -1515,17 +1528,31 @@ components:
         playlistURL:
           type: [string, "null"]
           format: uri
-          description: Master playlist URL — populated when status is `ready`.
+          description: |
+            Unsigned master playlist URL on the public media origin
+            (`{MEDIA_BASE_URL}/uploads/{uploadID}/index.m3u8`) — populated when
+            status is `ready`. For playback use the tokenised `streams[].streamURL`.
         durationSec: { type: [integer, "null"] }
         error:
           type: [string, "null"]
           description: |
             Failure reason when status is `failed`, formatted `code: detail`.
-            Codes: `checksum_mismatch`, `size_mismatch`, `unsafe_path`,
-            `symlink`, `disallowed_extension`, `too_many_files`, `too_large`,
-            `empty_archive`, `missing_master_playlist`,
-            `multiple_master_playlists`, `invalid_master_playlist`,
-            `missing_reference`, `empty_playlist`, `extraction_error`.
+
+            Archive codes: `checksum_mismatch`, `size_mismatch`, `invalid_archive`,
+            `entry_size_mismatch`, `unsafe_path`, `symlink`, `duplicate_entry`,
+            `disallowed_extension`, `too_many_files`, `too_large`, `empty_archive`,
+            `missing_master_playlist`, `multiple_master_playlists`,
+            `nested_master_playlist`.
+
+            Playlist codes: `invalid_master_playlist`, `missing_reference`,
+            `empty_playlist`, `rendition_duration_mismatch`.
+
+            Subtitle codes: `subtitle_language_missing`, `subtitle_language_invalid`,
+            `subtitle_language_duplicate`, `subtitle_directory_mismatch`,
+            `subtitle_cue_positioning`, `invalid_subtitle`.
+
+            Infrastructure codes (start a new upload once the cause is fixed):
+            `extraction_error`, `stuck_processing`, `no_worker`.
 
   examples:
     ProgramFull:

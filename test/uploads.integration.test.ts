@@ -113,7 +113,7 @@ describe.runIf(Boolean(DB_URL && S3_ENDPOINT && REDIS_URL))("uploads integration
         R2_ACCESS_KEY_ID: "tplace",
         R2_SECRET_ACCESS_KEY: "tplace-secret",
         R2_BUCKET_MEDIA: "tplace-media-dev",
-        MEDIA_BASE_URL: `${S3_ENDPOINT!}/tplace-media-dev`,
+        MEDIA_BASE_URL: `${S3_ENDPOINT!}/tplace-media-dev/media`,
       }),
     );
     await app.pgSql!`DELETE FROM uploads WHERE r2_key LIKE ${"tmp/uploads/%"} AND created_by IN (SELECT id FROM accounts WHERE handle LIKE 'itest-up-%')`;
@@ -210,7 +210,8 @@ describe.runIf(Boolean(DB_URL && S3_ENDPOINT && REDIS_URL))("uploads integration
     expect(status.status).toBe("ready");
     expect(status.error).toBeNull();
     expect(status.durationSec).toBe(12);
-    expect(status.playlistURL).toContain(`media/uploads/${uploadID}/index.m3u8`);
+    // Public media URL: the storage-only `media/` prefix never leaks out.
+    expect(status.playlistURL).toBe(`${S3_ENDPOINT!}/tplace-media-dev/media/uploads/${uploadID}/index.m3u8`);
 
     // Every file landed under the per-upload prefix.
     const keys = await storage.listPrefix(`media/uploads/${uploadID}`);
@@ -979,7 +980,7 @@ uhd4k/playlist.m3u8
     const body = res.json<{ imageID: string; url: string; width: number; height: number }>();
     expect(body.width).toBe(1);
     expect(body.height).toBe(1);
-    expect(body.url).toContain(`media/images/${body.imageID}.png`);
+    expect(body.url).toBe(`${S3_ENDPOINT!}/tplace-media-dev/media/images/${body.imageID}.png`);
     expect(await storage.head(`media/images/${body.imageID}.png`)).not.toBeNull();
   });
 

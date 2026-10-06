@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { errors } from "../../lib/errors.js";
-import { IMAGE_LIMITS, type UploadService } from "./service.js";
+import { IMAGE_LIMITS, UPLOAD_MAX_BYTES, type UploadService } from "./service.js";
 
 const uuid = { type: "string", format: "uuid" } as const;
 
@@ -22,8 +22,9 @@ export function registerUploadRoutes(app: FastifyInstance, service: UploadServic
           required: ["fileName", "byteSize", "checksum"],
           properties: {
             fileName: { type: "string", minLength: 1, maxLength: 255 },
-            byteSize: { type: "integer", minimum: 1, maximum: 10737418240 },
-            checksum: { type: "string", pattern: "^[a-fA-F0-9]{64}$" },
+            byteSize: { type: "integer", minimum: 1, maximum: UPLOAD_MAX_BYTES },
+            // Lowercase hex, exactly as the contract declares it.
+            checksum: { type: "string", pattern: "^[a-f0-9]{64}$" },
           },
         },
       },
