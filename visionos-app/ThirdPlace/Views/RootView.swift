@@ -12,6 +12,11 @@ struct RootView: View {
                 SearchView()
             }
             .tabItem { Label("Search", systemImage: "magnifyingglass") }
+
+            NavigationStack {
+                AccountView()
+            }
+            .tabItem { Label("Account", systemImage: "person.crop.circle") }
         }
     }
 }

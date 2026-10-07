@@ -36,6 +36,8 @@ extension URLSession: HTTPTransport {
 }
 
 /// Client for the public (app-key gated) surface of the Third Place API.
+/// Account endpoints live in `AccountClient`, which layers the bearer token on
+/// top of this client's plumbing.
 ///
 /// - Every request carries `X-App-Key` (spec §2.2, Decision D5).
 /// - Timestamps are ISO 8601 UTC, with or without fractional seconds.
@@ -119,12 +121,39 @@ public final class APIClient: @unchecked Sendable {
         try Self.ensureSuccess(data: data, response: response, decoder: decoder)
     }
 
-    // MARK: Plumbing
+    // MARK: Plumbing (shared with AccountClient, which adds the bearer token)
 
-    private func get<T: Decodable>(_ type: T.Type, _ path: String, query: [String: String?] = [:]) async throws -> T {
-        let request = makeRequest(path: path, query: query)
+    func get<T: Decodable>(_ type: T.Type, _ path: String, query: [String: String?] = [:], bearer: String? = nil) async throws -> T {
+        let request = makeRequest(path: path, query: query, bearer: bearer)
         let (data, response) = try await send(request)
         try Self.ensureSuccess(data: data, response: response, decoder: decoder)
+        return try decode(T.self, from: data, path: path)
+    }
+
+    /// JSON POST expecting a JSON body back.
+    func post<T: Decodable, B: Encodable>(_ path: String, body: B, bearer: String? = nil) async throws -> T {
+        let request = try makeJSONRequest(path: path, body: body, bearer: bearer)
+        let (data, response) = try await send(request)
+        try Self.ensureSuccess(data: data, response: response, decoder: decoder)
+        return try decode(T.self, from: data, path: path)
+    }
+
+    /// JSON POST where only the status matters (202 Accepted endpoints).
+    func postNoContent<B: Encodable>(_ path: String, body: B, bearer: String? = nil) async throws {
+        let request = try makeJSONRequest(path: path, body: body, bearer: bearer)
+        let (data, response) = try await send(request)
+        try Self.ensureSuccess(data: data, response: response, decoder: decoder)
+    }
+
+    /// Bodiless POST where only the status matters.
+    func postNoContent(_ path: String, bearer: String? = nil) async throws {
+        var request = makeRequest(path: path, query: [:], bearer: bearer)
+        request.httpMethod = "POST"
+        let (data, response) = try await send(request)
+        try Self.ensureSuccess(data: data, response: response, decoder: decoder)
+    }
+
+    private func decode<T: Decodable>(_ type: T.Type, from data: Data, path: String) throws -> T {
         do {
             return try decoder.decode(T.self, from: data)
         } catch {
@@ -132,7 +161,15 @@ public final class APIClient: @unchecked Sendable {
         }
     }
 
-    private func makeRequest(path: String, query: [String: String?]) -> URLRequest {
+    private func makeJSONRequest<B: Encodable>(path: String, body: B, bearer: String?) throws -> URLRequest {
+        var request = makeRequest(path: path, query: [:], bearer: bearer)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try encoder.encode(body)
+        return request
+    }
+
+    private func makeRequest(path: String, query: [String: String?], bearer: String? = nil) -> URLRequest {
         var components = URLComponents(url: baseURL.appendingPathComponent(path), resolvingAgainstBaseURL: false)!
         let items = query.compactMap { key, value in value.map { URLQueryItem(name: key, value: $0) } }
             .sorted { $0.name < $1.name }
@@ -140,6 +177,7 @@ public final class APIClient: @unchecked Sendable {
         var request = URLRequest(url: components.url!)
         request.setValue(appKey, forHTTPHeaderField: "X-App-Key")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        if let bearer { request.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization") }
         request.timeoutInterval = 20
         return request
     }

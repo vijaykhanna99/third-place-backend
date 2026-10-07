@@ -9,10 +9,13 @@ import ThirdPlaceAPI
 final class AppModel {
     let config: AppConfig
     let api: APIClient
+    /// Viewer account (optional for watching); tokens live in the Keychain.
+    let account: AccountModel
 
-    init(config: AppConfig = .current) {
+    init(config: AppConfig = .current, tokenStore: TokenStore = KeychainTokenStore()) {
         self.config = config
         self.api = APIClient(baseURL: config.apiBaseURL, appKey: config.appKey)
+        self.account = AccountModel(client: AccountClient(api: api, store: tokenStore))
     }
 
     func makePlayer(for episodeID: String) -> PlayerCoordinator {

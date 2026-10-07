@@ -21,9 +21,10 @@ visionos-app/
   Packages/ThirdPlaceAPI/         Swift package: API client + models from openapi.yaml + tests
   ThirdPlace/                     App target
     ThirdPlaceApp.swift           Scenes: catalog window, player window (per episode)
-    AppConfig.swift / AppModel.swift
+    AppConfig.swift / AppModel.swift / AccountModel.swift
     Views/                        RootView (tabs), BrowseView (genres → programs, paginated),
-                                  ProgramDetailView (+ EpisodeDetailView sheet), SearchView
+                                  ProgramDetailView (+ EpisodeDetailView sheet), SearchView,
+                                  AccountView (sign in, sign up, profile, sessions)
     Player/                       PlayerCoordinator (AVPlayer, angles, token refresh, telemetry),
                                   PlayerWindowView (AVPlayerViewController + angle ornament)
 ```
@@ -101,6 +102,17 @@ segments and playlists in the bundle layout the pipeline expects. CI builds the 
 on a macOS runner, renders two short bundles and pushes them through the real pipeline, so
 the generator is proven before you run it. Locally the bucket is served straight by MinIO
 (public read, no edge Worker), so URLs are unsigned; the refresh behaviour is identical.
+
+## Accounts (optional)
+
+Watching needs no account. The Account tab signs a viewer in or creates an account
+(`AccountClient` in the API package: login, refresh rotation with one retry on 401,
+logout, profile, sessions, emailed verification and password-reset requests). Only the
+refresh token is persisted, in the Keychain (`KeychainTokenStore`, this device only);
+the access token stays in memory. Sign-ups work when the backend runs with
+`REGISTRATION_OPEN=true`; otherwise the app shows "Sign-ups are not open yet". The
+emailed links open the web console's `/account/verify-email` and
+`/account/reset-password` pages, not the app.
 
 ## How playback works
 

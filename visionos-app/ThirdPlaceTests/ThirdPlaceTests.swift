@@ -28,6 +28,24 @@ final class ThirdPlaceTests: XCTestCase {
         XCTAssertEqual(try JSONDecoder().decode(PlayerRequest.self, from: data), request)
     }
 
+    @MainActor
+    func testAccountModelStartsSignedOutWithoutAStoredSession() async {
+        let model = AppModel(tokenStore: InMemoryTokenStore())
+        XCTAssertEqual(model.account.status, .unknown)
+        await model.account.restore()
+        XCTAssertEqual(model.account.status, .signedOut)
+        XCTAssertNil(model.account.account)
+    }
+
+    func testSignInMessagesStayFriendly() {
+        XCTAssertEqual(APIError.server(status: 401, code: "unauthenticated", message: "x").signInMessage,
+                       "That handle or password is not right.")
+        XCTAssertEqual(APIError.server(status: 409, code: "handle_taken", message: "x").signUpMessage,
+                       "That handle or email is already in use.")
+        XCTAssertEqual(APIError.server(status: 403, code: "registration_closed", message: "x").signUpMessage,
+                       "Sign-ups are not open yet.")
+    }
+
     func testLoadStateExposesOnlyLoadedValues() {
         XCTAssertNil(LoadState<Int>.idle.value)
         XCTAssertNil(LoadState<Int>.loading.value)
