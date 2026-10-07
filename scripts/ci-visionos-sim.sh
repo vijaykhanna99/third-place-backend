@@ -24,8 +24,12 @@ if [ -z "$udid" ]; then
   done
 fi
 [ -n "$udid" ] || { echo "no visionOS simulator could be created"; xcrun simctl list; exit 1; }
+udid=$(echo "$udid" | head -1 | tr -d '[:space:]')
 echo "udid=$udid"
 xcrun simctl boot "$udid" 2>/dev/null || true
 xcrun simctl bootstatus "$udid" -b
-xcrun simctl list devices | grep "$udid"
-if [ -n "${GITHUB_ENV:-}" ]; then echo "SIM_UDID=$udid" >> "$GITHUB_ENV"; fi
+device=$(xcrun simctl list devices | grep "$udid" || true)
+echo "$device"
+# Handed to the next step through a file (GITHUB_ENV parsing is unforgiving).
+printf '%s' "$udid" > .sim-udid
+echo "::notice title=simulator::udid=$udid $device"
