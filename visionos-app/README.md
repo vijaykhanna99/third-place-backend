@@ -4,10 +4,12 @@ SwiftUI client for Apple Vision Pro: browse genres and programs, search, open a 
 seasons and episodes, and play an episode's MV-HEVC HLS stream immersively with a camera-angle
 switcher. Talks to the backend through the public, app-key-gated API only (`X-App-Key`).
 
-> **Unverified.** This directory was written without Xcode or a Swift toolchain available
-> (the build environment is Linux). Nothing here has been compiled or run. Expect a short
-> round of compiler fixes on first build — the design and the API usage are complete, the
-> syntax has not been machine-checked. The Swift package's tests are the first thing to run.
+> **Verified in CI, not yet on a device.** CI (`.github/workflows/ci.yml`, job "visionOS app")
+> runs the API package's tests on macOS, generates the project with XcodeGen, builds the app
+> for the visionOS simulator with the newest Xcode on the runner (26.3 at the time of writing)
+> and runs the app's unit tests on a booted Apple Vision Pro simulator. What CI cannot do is
+> play video: the immersive playback path has only been exercised by compiling it, so the
+> first run on a device or simulator against the staging API is still a manual step.
 
 ## Layout
 
@@ -44,7 +46,8 @@ open ThirdPlace.xcodeproj
    fixture universe on port 4010 — then change `API_BASE_URL` accordingly).
 4. Run. Browse → genre → program → episode → Play.
 
-Start with the package tests; they need only a Swift toolchain (macOS is fine, no Xcode project needed):
+Both test suites also run on every push in CI. Locally, the package tests need only a Swift
+toolchain (macOS is fine, no Xcode project needed):
 
 ```bash
 cd visionos-app/Packages/ThirdPlaceAPI
@@ -53,7 +56,9 @@ swift test
 
 They decode the contract's own examples (`Tests/…/Fixtures/*.json`, copied from
 `openapi.yaml`) and exercise the client against a stubbed transport (app-key header, query
-building, error-envelope mapping, telemetry POST).
+building, error-envelope mapping, telemetry POST). The app target's tests
+(`ThirdPlaceTests/`) run on the simulator: `xcodebuild test -scheme ThirdPlace -destination
+'platform=visionOS Simulator,name=Apple Vision Pro'`.
 
 ## How playback works
 

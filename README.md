@@ -113,7 +113,7 @@ src/
   jobs/             BullMQ worker: ZIP extraction + janitor sweep (see jobs/README.md)
   cli/              Operator tooling, e.g. operator:create (step 4)
 edge-worker/        Cloudflare Worker: stream-token validation, playlist token propagation, R2 origin (own package, see its README)
-visionos-app/       SwiftUI visionOS client: API package + catalog/player app (unverified: no Xcode in CI; see its README)
+visionos-app/       SwiftUI visionOS client: API package + catalog/player app (built and unit-tested in CI on a macOS runner)
 deploy/             Production compose stack, Caddyfile, env checklist, Cloudflare notes, runbook (step 10)
 openapi.yaml        The API contract, source of truth — repo root per spec §1 (step 2)
 test/               Vitest suites (unit + integration against the Docker services)
@@ -133,6 +133,6 @@ test/               Vitest suites (unit + integration against the Docker service
 | 6.5 | Upload pipeline review fixes: retryable extraction with atomic claims, stuck-upload recovery, streamed entries with per-entry caps, bounded shutdown and scratch hygiene, subtitle/I-frame/nested-master validation, contract fixes, test isolation, CI + container build | ✅ done |
 | 7 | Delivery: stream tokens, edge Worker, quality enum | ✅ done |
 | 8 | Metrics endpoint, janitor job, rate limiting, hardening pass (helmet, body limits, readiness probe) | ✅ done |
-| 9 | visionOS app: API client from the contract, browse/search/program/episode screens, immersive MV-HEVC player with angle switcher | code written, not compiled (no Xcode available) |
+| 9 | visionOS app: API client from the contract, browse/search/program/episode screens, immersive MV-HEVC player with angle switcher | ✅ done — builds with Xcode 26.3 and its unit tests run on a Vision Pro simulator in CI |
 | 10 | Deployment preparation: compose stack, Caddy, env checklist, Cloudflare/Worker notes, runbook (`deploy/`) | prepared, nothing deployed |
 | 11 | Cloud verification: CI runs the HTTP end-to-end smoke test (`pnpm e2e`) against built API + worker processes, the Worker suite, the image build, and builds the visionOS app with Xcode on a macOS runner; failures surface as check-run annotations | ✅ done |
