@@ -180,7 +180,7 @@ jobs:
           ../scripts/ci-run.sh "xcodebuild test" ../scripts/ci-filter.sh
           "error:|Test Case|Test Suite|Executed|BUILD|TEST|xcodebuild: "
           xcodebuild test -project ThirdPlace.xcodeproj -scheme ThirdPlace -configuration Debug
-          -destination "platform=visionOS Simulator,name=Apple Vision Pro CI"
+          -destination "platform=visionOS Simulator,id=$SIM_UDID"
           CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO -skipPackagePluginValidation
 
         working-directory: visionos-app
