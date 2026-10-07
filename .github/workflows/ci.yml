@@ -258,6 +258,52 @@ jobs:
           R2_SECRET_ACCESS_KEY: tplace-secret
           R2_BUCKET_MEDIA: tplace-media-dev
 
+  console:
+    name: Operator console (typecheck, lint, tests, build, e2e, image)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: console/pnpm-lock.yaml
+      - run: ../scripts/ci-run.sh "console install" pnpm install --frozen-lockfile
+        working-directory: console
+      - name: Generated contract types match the repository contract
+        run: |
+          ../scripts/ci-run.sh "console contract sync" pnpm contract:sync
+          ../scripts/ci-run.sh "console contract types" pnpm contract:types
+          ../scripts/ci-run.sh "console contract drift" git diff --exit-code -- contract/openapi.yaml src/api/schema.d.ts
+        working-directory: console
+      - run: ../scripts/ci-run.sh "console typecheck" pnpm typecheck
+        working-directory: console
+      - run: ../scripts/ci-run.sh "console lint" pnpm lint
+        working-directory: console
+      - run: ../scripts/ci-run.sh "console tests" pnpm test
+        working-directory: console
+      - run: ../scripts/ci-run.sh "console build" pnpm build
+        working-directory: console
+      - run: ../scripts/ci-run.sh "console playwright" pnpm exec playwright install --with-deps chromium
+        working-directory: console
+      - name: End-to-end in a real browser against the mock API
+        run: ../scripts/ci-run.sh "console e2e" pnpm test:e2e
+        working-directory: console
+        env:
+          CI: "true"
+      - name: Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: console-playwright-report
+          path: console/playwright-report/
+          retention-days: 7
+      - name: Console image builds (not pushed)
+        run: ../scripts/ci-run.sh "console image" docker build -t third-place-console:ci .
+        working-directory: console
+
   image:
     name: Container image builds
     runs-on: ubuntu-latest

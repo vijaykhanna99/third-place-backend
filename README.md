@@ -63,7 +63,7 @@ answers). Public reads are rate limited to 60 requests/minute per client IP (Red
 `TRUSTED_PROXIES` decides which `X-Forwarded-For` hops to believe).
 
 `CORS_ORIGINS` lists the exact browser origins allowed to call the API (the operator web
-console, a separate repository: `third-place-console`); unset, CORS stays closed.
+console in `console/`); unset, CORS stays closed.
 `REGISTRATION_OPEN=true` opens viewer registration; account emails (verification links,
 password resets) go through `MAIL_TRANSPORT` (`log` locally, `smtp` with `SMTP_URL` and
 `MAIL_FROM` in production) and link to `ACCOUNT_LINKS_BASE_URL`, the console's
@@ -79,8 +79,9 @@ the edge Worker maps one onto the other; locally the base URL points at the buck
 - `.github/workflows/ci.yml` runs typecheck, lint, the contract lint, the full test
   suite (Postgres and Redis as service containers, MinIO as a container step), the
   production build and the HTTP end-to-end smoke test on every push and pull request,
-  then builds the container image; the edge Worker and the visionOS app (Xcode, macOS
-  runner) build and test in parallel jobs. Each step runs through `scripts/ci-run.sh`,
+  then builds the container image; the edge Worker, the operator console (unit tests,
+  Playwright end-to-end in Chromium against a mock API, image build) and the visionOS app
+  (Xcode, macOS runner) build and test in parallel jobs. Each step runs through `scripts/ci-run.sh`,
   which republishes a failing step's output as check-run annotations.
 - `Dockerfile` is a multi-stage build producing one image for the API and the worker:
 
@@ -122,6 +123,7 @@ src/
 tools/mvhevc/       macOS tool rendering MV-HEVC stereo HLS test bundles (for watching a real stream locally)
 scripts/            CI helpers, the HTTP end-to-end test, the local watch setup
 edge-worker/        Cloudflare Worker: stream-token validation, playlist token propagation, R2 origin (own package, see its README)
+console/            Operator web console: React app for login, uploads, programs and accounts (own package and image, see its README)
 visionos-app/       SwiftUI visionOS client: API package + catalog/player app (built and unit-tested in CI on a macOS runner)
 deploy/             Production compose stack, Caddyfile, env checklist, Cloudflare notes, runbook (step 10)
 openapi.yaml        The API contract, source of truth — repo root per spec §1 (step 2)
@@ -145,5 +147,5 @@ test/               Vitest suites (unit + integration against the Docker service
 | 9 | visionOS app: API client from the contract, browse/search/program/episode screens, immersive MV-HEVC player with angle switcher | ✅ done — builds with Xcode 26.3 and its unit tests run on a Vision Pro simulator in CI |
 | 10 | Deployment preparation: compose stack, Caddy, env checklist, Cloudflare/Worker notes, runbook (`deploy/`) | prepared, nothing deployed |
 | 12 | Watch setup: `tools/mvhevc` MV-HEVC test-clip generator, `scripts/watch-setup.sh` (services, clips, upload pipeline, program, app config), CI pushes a generated bundle through the pipeline | ✅ done — see `visionos-app/README.md` → "Watch a real stream" |
-| 14 | Accounts: CORS allowlist for the operator web console (own repository `third-place-console`), `uploadID` on every stream, viewer registration behind `REGISTRATION_OPEN`, emailed verification and password-reset tokens, SMTP/log mail transport; visionOS sign-in, sign-up and account screens | ✅ done — console repository separate |
+| 14 | Accounts and console: operator web console (`console/`, self-contained, ready to split into its own repository), CORS allowlist, `uploadID` on every stream, viewer registration behind `REGISTRATION_OPEN`, emailed verification and password-reset tokens, SMTP/log mail transport; visionOS sign-in, sign-up and account screens | ✅ done |
 | 11 | Cloud verification: CI runs the HTTP end-to-end smoke test (`pnpm e2e`) against built API + worker processes, the Worker suite, the image build, and builds the visionOS app with Xcode on a macOS runner; failures surface as check-run annotations | ✅ done |
