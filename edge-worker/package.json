@@ -14,7 +14,8 @@
     "deploy:staging": "wrangler deploy --env staging",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "smoke": "test/smoke.sh"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250620.0",

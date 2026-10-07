@@ -33,6 +33,9 @@ targets:
       - path: ThirdPlace
     dependencies:
       - package: ThirdPlaceAPI
+    scheme:
+      testTargets: [ThirdPlaceTests]
+      gatherCoverageData: false
     configFiles:
       Debug: Config/Debug.xcconfig
       Release: Config/Release.xcconfig
@@ -61,3 +64,16 @@ targets:
         # Mac. Release builds talk HTTPS and never need this.
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
+
+  ThirdPlaceTests:
+    type: bundle.unit-test
+    platform: visionOS
+    sources:
+      - path: ThirdPlaceTests
+    dependencies:
+      - target: ThirdPlace
+      - package: ThirdPlaceAPI
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: jp.co.3rd-place.ThirdPlaceTests
+        GENERATE_INFOPLIST_FILE: YES

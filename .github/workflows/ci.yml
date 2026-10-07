@@ -110,6 +110,9 @@ jobs:
       - name: Bundle (dry run, no deploy)
         run: ../scripts/ci-run.sh "worker bundle" npx wrangler deploy --dry-run --outdir /tmp/worker-bundle
         working-directory: edge-worker
+      - name: Smoke test in the real workerd runtime (wrangler dev, local R2)
+        run: ../scripts/ci-run.sh "worker smoke" test/smoke.sh
+        working-directory: edge-worker
 
   apple:
     name: visionOS app (Xcode)
@@ -162,12 +165,22 @@ jobs:
         run: |
           xcodebuild -showsdks | grep -i xros || true
           xcrun simctl list runtimes | grep -i visionos || sudo xcodebuild -downloadPlatform visionOS
+      - name: Boot an Apple Vision Pro simulator
+        run: ../scripts/ci-run.sh "simulator" ../scripts/ci-visionos-sim.sh
+        working-directory: visionos-app
       - name: Build the app for the visionOS simulator
         run: >-
           ../scripts/ci-run.sh "xcodebuild" ../scripts/ci-filter.sh
           "error:|warning: .*(deprecated|unused)|BUILD|Compiling|Linking|note: Using|xcodebuild: "
           xcodebuild build -project ThirdPlace.xcodeproj -scheme ThirdPlace -configuration Debug
           -destination "generic/platform=visionOS Simulator"
+          CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO -skipPackagePluginValidation
+      - name: Run the app's unit tests on the simulator
+        run: >-
+          ../scripts/ci-run.sh "xcodebuild test" ../scripts/ci-filter.sh
+          "error:|Test Case|Test Suite|Executed|BUILD|TEST|xcodebuild: "
+          xcodebuild test -project ThirdPlace.xcodeproj -scheme ThirdPlace -configuration Debug
+          -destination "platform=visionOS Simulator,name=Apple Vision Pro CI"
           CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO -skipPackagePluginValidation
 
         working-directory: visionos-app
