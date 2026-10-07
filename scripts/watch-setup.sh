@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One-command local playback setup on a Mac (Apple silicon, macOS 14+):
+# One-command local playback setup on a Mac (Apple silicon, macOS 15+):
 #   1. starts Postgres/Redis/MinIO (docker compose) and migrates
 #   2. builds tools/mvhevc and renders two MV-HEVC stereo test clips (two camera angles)
 #   3. starts the API and the extraction worker in the background

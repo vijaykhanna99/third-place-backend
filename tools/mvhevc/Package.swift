@@ -7,7 +7,7 @@ import PackageDescription
 // end to end without waiting for production footage.
 let package = Package(
     name: "mvhevc-tools",
-    platforms: [.macOS(.v14)],
+    platforms: [.macOS(.v15)],
     targets: [
         .executableTarget(name: "make-bundle", path: "Sources/make-bundle")
     ],
