@@ -11,13 +11,16 @@ const credentialString = { type: "string", minLength: 1, maxLength: 512 } as con
  * are configured (app.ts guards this).
  */
 export function registerAuthRoutes(app: FastifyInstance): void {
-  const service = new AuthService(app.db!, app.env);
+  const service = new AuthService(app.db!, app.env, app.mailer);
   const limiter = new LoginLimiter(app.redis);
 
-  // ---- Register (deployed, externally closed in v1 — spec §3/§4.1) ----
+  // ---- Register (spec §4.1) — closed unless REGISTRATION_OPEN=true ----
+  // Shares the public per-IP budget so a script cannot mint accounts, or
+  // probe handles, faster than it can read the catalog.
   app.post(
     "/api/v1/auth/register",
     {
+      preValidation: app.publicRateLimit(),
       schema: {
         body: {
           type: "object",
@@ -31,8 +34,11 @@ export function registerAuthRoutes(app: FastifyInstance): void {
         },
       },
     },
-    () => {
-      throw errors.registrationClosed();
+    async (req) => {
+      if (!app.env.registrationOpen) throw errors.registrationClosed();
+      const body = req.body as { handle: string; email: string; password: string; displayName: string };
+      const deviceInfo = req.headers["user-agent"]?.slice(0, 200) ?? null;
+      return service.register(body, deviceInfo);
     },
   );
 
@@ -136,14 +142,15 @@ export function registerAuthRoutes(app: FastifyInstance): void {
     },
   );
 
-  // ---- Email verification / password reset (dormant in v1 — spec §4.7) ----
-  // No email provider is wired, so no token can legitimately exist: requests
-  // are accepted as no-ops (202) and every presented token is invalid (401).
-  // Real issuance arrives with the Phase-2 email provider.
+  // ---- Email verification / password reset (spec §4.7) ----
+  // Links are emailed through app.mailer; without a mailer configured the
+  // requests are accepted as no-ops and no token can exist, so every
+  // presented token is invalid — the pre-provider behaviour.
   app.post(
     "/api/v1/auth/email/verify-request",
     { preValidation: app.requireRole("any") },
-    async (_req, reply) => {
+    async (req, reply) => {
+      await service.requestEmailVerification(req.auth!.accountId);
       await reply.status(202).send();
     },
   );
@@ -159,14 +166,13 @@ export function registerAuthRoutes(app: FastifyInstance): void {
         },
       },
     },
-    () => {
-      throw errors.invalidToken();
-    },
+    (req) => service.verifyEmail((req.body as { token: string }).token),
   );
 
   app.post(
     "/api/v1/auth/password/reset-request",
     {
+      preValidation: app.publicRateLimit(),
       schema: {
         body: {
           type: "object",
@@ -175,7 +181,8 @@ export function registerAuthRoutes(app: FastifyInstance): void {
         },
       },
     },
-    async (_req, reply) => {
+    async (req, reply) => {
+      await service.requestPasswordReset((req.body as { identifier: string }).identifier);
       await reply.status(202).send();
     },
   );
@@ -194,8 +201,9 @@ export function registerAuthRoutes(app: FastifyInstance): void {
         },
       },
     },
-    () => {
-      throw errors.invalidToken();
+    (req) => {
+      const { token, password } = req.body as { token: string; password: string };
+      return service.resetPassword(token, password);
     },
   );
 

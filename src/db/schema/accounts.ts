@@ -55,3 +55,25 @@ export const sessions = pgTable(
     index("sessions_chain_idx").on(t.chainId),
   ],
 );
+
+/** Single-use account tokens: email verification and password reset (spec §4.7). */
+export const accountTokenKind = pgEnum("account_token_kind", ["email_verify", "password_reset"]);
+
+export const accountTokens = pgTable(
+  "account_tokens",
+  {
+    id: uuid("id")
+      .primaryKey()
+      .$defaultFn(() => uuidv7()),
+    accountId: uuid("account_id")
+      .notNull()
+      .references(() => accounts.id, { onDelete: "cascade" }),
+    kind: accountTokenKind("kind").notNull(),
+    /** SHA-256 of the token that was emailed — the raw token is never stored. */
+    tokenHash: text("token_hash").notNull().unique(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("account_tokens_account_idx").on(t.accountId, t.kind)],
+);

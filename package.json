@@ -2,7 +2,7 @@
   "name": "third-place-backend",
   "version": "0.1.0",
   "private": true,
-  "description": "Third Place immersive video platform \u2014 backend API server",
+  "description": "Third Place immersive video platform — backend API server",
   "type": "module",
   "engines": {
     "node": ">=22"
@@ -38,6 +38,7 @@
     "@aws-sdk/client-s3": "^3.1146.0",
     "@aws-sdk/lib-storage": "^3.1146.0",
     "@aws-sdk/s3-request-presigner": "^3.1146.0",
+    "@fastify/cors": "^11.3.0",
     "@fastify/helmet": "^13.1.1",
     "@fastify/multipart": "^10.1.0",
     "argon2": "^0.45.1",
@@ -48,6 +49,7 @@
     "image-size": "^2.0.2",
     "ioredis": "^5.6.1",
     "jose": "^6.2.8",
+    "nodemailer": "^10.0.15",
     "postgres": "^3.4.7",
     "uuidv7": "^1.2.1",
     "yauzl": "^3.4.0",
@@ -57,6 +59,7 @@
     "@redocly/cli": "^2.44.2",
     "@stoplight/prism-cli": "^5.16.0",
     "@types/node": "^22.15.0",
+    "@types/nodemailer": "^8.0.2",
     "@types/yauzl": "^3.4.0",
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",

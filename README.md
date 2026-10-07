@@ -62,6 +62,13 @@ dependency outage) and `GET /readyz` is readiness (503 until every configured de
 answers). Public reads are rate limited to 60 requests/minute per client IP (Redis-backed,
 `TRUSTED_PROXIES` decides which `X-Forwarded-For` hops to believe).
 
+`CORS_ORIGINS` lists the exact browser origins allowed to call the API (the operator web
+console, a separate repository: `third-place-console`); unset, CORS stays closed.
+`REGISTRATION_OPEN=true` opens viewer registration; account emails (verification links,
+password resets) go through `MAIL_TRANSPORT` (`log` locally, `smtp` with `SMTP_URL` and
+`MAIL_FROM` in production) and link to `ACCOUNT_LINKS_BASE_URL`, the console's
+`/account/…` pages.
+
 `MEDIA_BASE_URL` is the public media origin. Storage keys carry a `media/` prefix
 (`media/uploads/{uploadID}/…`); public URLs do not (`/uploads/{uploadID}/…`). In production
 the edge Worker maps one onto the other; locally the base URL points at the bucket's
@@ -138,4 +145,5 @@ test/               Vitest suites (unit + integration against the Docker service
 | 9 | visionOS app: API client from the contract, browse/search/program/episode screens, immersive MV-HEVC player with angle switcher | ✅ done — builds with Xcode 26.3 and its unit tests run on a Vision Pro simulator in CI |
 | 10 | Deployment preparation: compose stack, Caddy, env checklist, Cloudflare/Worker notes, runbook (`deploy/`) | prepared, nothing deployed |
 | 12 | Watch setup: `tools/mvhevc` MV-HEVC test-clip generator, `scripts/watch-setup.sh` (services, clips, upload pipeline, program, app config), CI pushes a generated bundle through the pipeline | ✅ done — see `visionos-app/README.md` → "Watch a real stream" |
+| 14 | Accounts: CORS allowlist for the operator web console (own repository `third-place-console`), `uploadID` on every stream, viewer registration behind `REGISTRATION_OPEN`, emailed verification and password-reset tokens, SMTP/log mail transport; visionOS sign-in, sign-up and account screens | ✅ done — console repository separate |
 | 11 | Cloud verification: CI runs the HTTP end-to-end smoke test (`pnpm e2e`) against built API + worker processes, the Worker suite, the image build, and builds the visionOS app with Xcode on a macOS runner; failures surface as check-run annotations | ✅ done |

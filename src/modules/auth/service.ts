@@ -1,14 +1,17 @@
 import { and, eq, gt, isNull, or } from "drizzle-orm";
 import { uuidv7 } from "uuidv7";
 import type { Db } from "../../db/client.js";
-import { accounts, sessions } from "../../db/schema/index.js";
+import { accountTokens, accounts, sessions } from "../../db/schema/index.js";
 import type { Env } from "../../config/env.js";
 import { errors } from "../../lib/errors.js";
+import type { Mailer } from "../../lib/mailer.js";
 import { DUMMY_HASH, hashPassword, verifyPassword } from "./passwords.js";
 import {
   type AccessClaims,
   type Role,
+  generateAccountToken,
   generateRefreshToken,
+  hashAccountToken,
   hashRefreshToken,
   signAccessToken,
 } from "./tokens.js";
@@ -25,12 +28,28 @@ export interface AccountView {
   did: string;
   handle: string;
   email: string;
+  /** When the address was confirmed through the emailed link; null until then. */
+  emailVerifiedAt: string | null;
   displayName: string;
   description: string;
   avatarURL: string | null;
   createdAt: string;
   updatedAt: string;
 }
+
+/** Contract `RegisterResponse`: the new profile plus its first token pair. */
+export interface RegisterResponse extends TokenResponse {
+  email: string;
+  displayName: string;
+  avatarURL: string | null;
+  createdAt: string;
+}
+
+type AccountTokenKind = (typeof accountTokens.$inferSelect)["kind"];
+
+/** Lifetimes of the single-use emailed tokens (spec §4.7: short-lived). */
+export const EMAIL_VERIFY_TTL_MS = 24 * 60 * 60 * 1000;
+export const PASSWORD_RESET_TTL_MS = 30 * 60 * 1000;
 
 type AccountRow = typeof accounts.$inferSelect;
 
@@ -42,6 +61,7 @@ function toAccountView(a: AccountRow): AccountView {
     did: a.did,
     handle: a.handle,
     email: a.email,
+    emailVerifiedAt: a.emailVerifiedAt?.toISOString() ?? null,
     displayName: a.displayName,
     description: a.description,
     avatarURL: a.avatarUrl,
@@ -54,6 +74,7 @@ export class AuthService {
   constructor(
     private readonly db: Db,
     private readonly env: Env,
+    private readonly mailer: Mailer | null = null,
   ) {}
 
   private refreshExpired(issuedAt: Date): boolean {
@@ -127,6 +148,11 @@ export class AuthService {
     const ok = await verifyPassword(account?.passwordHash ?? DUMMY_HASH, password);
     if (!account || !ok) return { accountId: account?.id ?? null, tokens: null };
 
+    return { accountId: account.id, tokens: await this.openSession(account, deviceInfo) };
+  }
+
+  /** Opens a new session chain for an account and returns its first token pair. */
+  private async openSession(account: AccountRow, deviceInfo: string | null): Promise<TokenResponse> {
     const chainId = uuidv7();
     const refreshToken = generateRefreshToken();
     await this.db.insert(sessions).values({
@@ -135,11 +161,168 @@ export class AuthService {
       chainId,
       deviceInfo,
     });
+    return this.tokenResponse(account, chainId, refreshToken);
+  }
 
+  /**
+   * Public registration (spec §4.1, open when REGISTRATION_OPEN=true). Creates
+   * a `user` account, signs it in, and emails the verification link. A failed
+   * send does not fail the registration: the account exists and can ask for
+   * the email again from the verify-request endpoint.
+   */
+  async register(
+    input: { handle: string; email: string; password: string; displayName: string },
+    deviceInfo: string | null,
+  ): Promise<RegisterResponse> {
+    const account = await this.createAccount({ ...input, role: "user" });
+    const tokens = await this.openSession(account, deviceInfo);
+    await this.requestEmailVerification(account.id).catch(() => undefined);
     return {
-      accountId: account.id,
-      tokens: await this.tokenResponse(account, chainId, refreshToken),
+      ...tokens,
+      email: account.email,
+      displayName: account.displayName,
+      avatarURL: account.avatarUrl,
+      createdAt: account.createdAt.toISOString(),
     };
+  }
+
+  // ---- Emailed single-use tokens (spec §4.7) ----
+
+  /**
+   * Issues a fresh token of `kind` and retires every unconsumed one of the
+   * same kind, so only the latest email is live. Returns the raw token, which
+   * exists only in the email: the table holds its hash.
+   */
+  private async issueAccountToken(accountId: string, kind: AccountTokenKind, ttlMs: number): Promise<string> {
+    const raw = generateAccountToken();
+    const now = new Date();
+    await this.db.transaction(async (tx) => {
+      await tx
+        .update(accountTokens)
+        .set({ consumedAt: now })
+        .where(
+          and(
+            eq(accountTokens.accountId, accountId),
+            eq(accountTokens.kind, kind),
+            isNull(accountTokens.consumedAt),
+          ),
+        );
+      await tx.insert(accountTokens).values({
+        accountId,
+        kind,
+        tokenHash: hashAccountToken(raw),
+        expiresAt: new Date(now.getTime() + ttlMs),
+      });
+    });
+    return raw;
+  }
+
+  /**
+   * Consumes a token atomically: the UPDATE only matches a live row, so two
+   * concurrent presentations of one token yield exactly one winner.
+   */
+  private async consumeAccountToken(tx: DbOrTx, raw: string, kind: AccountTokenKind): Promise<string> {
+    const [row] = await tx
+      .update(accountTokens)
+      .set({ consumedAt: new Date() })
+      .where(
+        and(
+          eq(accountTokens.tokenHash, hashAccountToken(raw)),
+          eq(accountTokens.kind, kind),
+          isNull(accountTokens.consumedAt),
+          gt(accountTokens.expiresAt, new Date()),
+        ),
+      )
+      .returning({ accountId: accountTokens.accountId });
+    if (!row) throw errors.invalidToken();
+    return row.accountId;
+  }
+
+  private accountLink(path: string, token: string): string {
+    const base = this.env.ACCOUNT_LINKS_BASE_URL ?? "http://127.0.0.1:5173";
+    return `${base}${path}?token=${encodeURIComponent(token)}`;
+  }
+
+  /** Emails a verification link; a no-op for an already verified address. */
+  async requestEmailVerification(accountId: string): Promise<void> {
+    const [a] = await this.db
+      .select()
+      .from(accounts)
+      .where(and(eq(accounts.id, accountId), isNull(accounts.deletedAt)))
+      .limit(1);
+    if (!a) throw errors.unauthenticated();
+    if (a.emailVerifiedAt || !this.mailer) return;
+    const token = await this.issueAccountToken(a.id, "email_verify", EMAIL_VERIFY_TTL_MS);
+    await this.mailer.send({
+      to: a.email,
+      subject: "Confirm your email address",
+      text: [
+        `Hi ${a.displayName},`,
+        "",
+        "Confirm this address for your Third Place account by opening the link below.",
+        "It is valid for 24 hours.",
+        "",
+        this.accountLink("/account/verify-email", token),
+        "",
+        "If you did not create an account, ignore this message.",
+      ].join("\n"),
+    });
+  }
+
+  async verifyEmail(raw: string): Promise<{ verified: boolean }> {
+    await this.db.transaction(async (tx) => {
+      const accountId = await this.consumeAccountToken(tx, raw, "email_verify");
+      await tx
+        .update(accounts)
+        .set({ emailVerifiedAt: new Date() })
+        .where(and(eq(accounts.id, accountId), isNull(accounts.deletedAt)));
+    });
+    return { verified: true };
+  }
+
+  /**
+   * Emails a reset link when the identifier names an account. The caller
+   * answers 202 either way (no account oracle, spec §4.7).
+   */
+  async requestPasswordReset(identifier: string): Promise<void> {
+    if (!this.mailer) return;
+    const [a] = await this.db
+      .select()
+      .from(accounts)
+      .where(
+        and(
+          or(eq(accounts.handle, identifier), eq(accounts.email, identifier)),
+          isNull(accounts.deletedAt),
+        ),
+      )
+      .limit(1);
+    if (!a) return;
+    const token = await this.issueAccountToken(a.id, "password_reset", PASSWORD_RESET_TTL_MS);
+    await this.mailer.send({
+      to: a.email,
+      subject: "Reset your password",
+      text: [
+        `Hi ${a.displayName},`,
+        "",
+        "Someone asked to reset the password of your Third Place account.",
+        "Open the link below within 30 minutes to choose a new one.",
+        "",
+        this.accountLink("/account/reset-password", token),
+        "",
+        "If this was not you, ignore this message; your password is unchanged.",
+      ].join("\n"),
+    });
+  }
+
+  /** Sets a new password and invalidates every session (spec §4.7). */
+  async resetPassword(raw: string, password: string): Promise<{ reset: boolean }> {
+    const passwordHash = await hashPassword(password);
+    await this.db.transaction(async (tx) => {
+      const accountId = await this.consumeAccountToken(tx, raw, "password_reset");
+      await tx.update(accounts).set({ passwordHash }).where(eq(accounts.id, accountId));
+      await this.revokeAllSessions(tx, accountId);
+    });
+    return { reset: true };
   }
 
   private async tokenResponse(

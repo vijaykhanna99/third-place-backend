@@ -14,6 +14,8 @@ import { Storage, storageConfigFromEnv } from "./lib/storage.js";
 import { createExtractionQueue } from "./jobs/queue.js";
 import multipart from "@fastify/multipart";
 import helmet from "@fastify/helmet";
+import cors from "@fastify/cors";
+import { mailerFromEnv, type Mailer } from "./lib/mailer.js";
 import { registerCatalogRoutes } from "./modules/catalog/routes.js";
 import { registerMediaRoutes } from "./modules/media/routes.js";
 import { StreamUrlIssuer } from "./modules/media/stream-urls.js";
@@ -35,7 +37,12 @@ export const BODY_LIMIT_BYTES = 1024 * 1024;
  * unit tests stay hermetic without either; /healthz reports "skipped" for
  * unconfigured components.
  */
-export function buildApp(env: Env): FastifyInstance {
+export interface AppDependencies {
+  /** Outbound account email; defaults to the transport MAIL_TRANSPORT names. */
+  mailer?: Mailer;
+}
+
+export function buildApp(env: Env, deps: AppDependencies = {}): FastifyInstance {
   const app = Fastify({
     logger: {
       level: env.LOG_LEVEL,
@@ -66,7 +73,22 @@ export function buildApp(env: Env): FastifyInstance {
     strictTransportSecurity: { maxAge: 63_072_000, includeSubDomains: true, preload: true },
   });
 
+  // CORS stays closed unless exact browser origins are allowlisted (spec
+  // §2.5): the operator console is the only browser client. No credentials
+  // mode — the console authenticates with a bearer token, never a cookie.
+  if (env.corsOrigins.length > 0) {
+    void app.register(cors, {
+      origin: env.corsOrigins,
+      methods: ["GET", "POST", "OPTIONS"],
+      allowedHeaders: ["Authorization", "Content-Type", "X-App-Key"],
+      exposedHeaders: ["RateLimit-Limit", "RateLimit-Remaining", "RateLimit-Reset", "Retry-After"],
+      maxAge: 600,
+      credentials: false,
+    });
+  }
+
   app.decorate("env", env);
+  app.decorate("mailer", deps.mailer ?? mailerFromEnv(env, app.log));
 
   // Several POST endpoints take no body (complete, delete, revoke). Clients
   // routinely send `Content-Type: application/json` on every request, which
@@ -188,6 +210,7 @@ export function buildApp(env: Env): FastifyInstance {
 declare module "fastify" {
   interface FastifyInstance {
     env: Env;
+    mailer: Mailer;
     streamUrls: StreamUrlIssuer;
     storage?: Storage;
     uploadService?: UploadService;

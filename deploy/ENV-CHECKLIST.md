@@ -30,6 +30,12 @@ check only what they use. Generate secrets with `openssl rand -hex 32`.
 | `STREAM_TOKEN_SECRET` | **yes** | API | ≥ 32 chars; **identical** to the Worker's secret |
 | `STREAM_TOKEN_TTL_SEC` | no | API | 900 (spec §5.2). Longer = fewer mid-playback refreshes in the app, weaker hotlink deterrence |
 | `MEDIA_BASE_URL` | **yes** | API | the Worker's public origin, e.g. `https://media.3rd-place.co.jp` (no trailing slash) |
+| `CORS_ORIGINS` | no (**yes** for the web console) | API | exact browser origins allowed to call the API, comma-separated, e.g. `https://console.3rd-place.co.jp`. No wildcards, no paths. Unset = CORS closed (native clients only) |
+| `REGISTRATION_OPEN` | no | API | `true` opens `POST /auth/register` to viewers (spec Phase 2). Default `false`; production then also requires the three email settings below |
+| `MAIL_TRANSPORT` | no | API | `smtp` in production; `log` (default) only writes account emails to the log |
+| `SMTP_URL` | with `smtp` | API | `smtps://user:pass@host:465` or `smtp://…:587` from the email provider |
+| `MAIL_FROM` | with `smtp` | API | sender header, e.g. `Third Place <no-reply@3rd-place.co.jp>`; the domain needs SPF/DKIM at the provider |
+| `ACCOUNT_LINKS_BASE_URL` | with `smtp` | API | public origin of the web console, which serves `/account/verify-email` and `/account/reset-password` |
 
 Also in `.env.production` for compose only: `IMAGE` (container image tag) and `API_DOMAIN`
 (Caddy's certificate domain).

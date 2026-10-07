@@ -50,6 +50,13 @@
       "when": 1791310132498,
       "tag": "0006_janitor-bookkeeping",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1791352685062,
+      "tag": "0007_account-tokens",
+      "breakpoints": true
     }
   ]
 }

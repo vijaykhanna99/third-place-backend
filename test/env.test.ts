@@ -77,6 +77,32 @@ describe("loadEnvFrom", () => {
     expect(() => loadEnvFrom({ NODE_ENV: "development" })).not.toThrow();
     expect(() => loadEnvFrom({ NODE_ENV: "test" })).not.toThrow();
   });
+
+  it("keeps registration closed and email in the log by default", () => {
+    const env = loadEnvFrom({});
+    expect(env.registrationOpen).toBe(false);
+    expect(env.MAIL_TRANSPORT).toBe("log");
+    expect(env.corsOrigins).toEqual([]);
+    expect(loadEnvFrom({ REGISTRATION_OPEN: "true" }).registrationOpen).toBe(true);
+    expect(() => loadEnvFrom({ REGISTRATION_OPEN: "yes" })).toThrow(/REGISTRATION_OPEN/);
+  });
+
+  it("production with registration open must deliver email for real", () => {
+    expect(() => loadEnvFrom({ ...production, REGISTRATION_OPEN: "true" })).toThrow(/MAIL_TRANSPORT/);
+    expect(() =>
+      loadEnvFrom({ ...production, REGISTRATION_OPEN: "true", MAIL_TRANSPORT: "smtp" }),
+    ).toThrow(/SMTP_URL/);
+    expect(() =>
+      loadEnvFrom({
+        ...production,
+        REGISTRATION_OPEN: "true",
+        MAIL_TRANSPORT: "smtp",
+        SMTP_URL: "smtps://user:pass@smtp.example:465",
+        MAIL_FROM: "Third Place <no-reply@3rd-place.co.jp>",
+        ACCOUNT_LINKS_BASE_URL: "https://console.3rd-place.co.jp",
+      }),
+    ).not.toThrow();
+  });
 });
 
 describe("loadEnvFrom strict: false", () => {

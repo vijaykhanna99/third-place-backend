@@ -70,6 +70,15 @@ export function hashRefreshToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
 }
 
+/** Emailed single-use token (verification, reset) — only its hash is stored. */
+export function generateAccountToken(): string {
+  return `act_${randomBytes(32).toString("base64url")}`;
+}
+
+export function hashAccountToken(token: string): string {
+  return createHash("sha256").update(token).digest("hex");
+}
+
 /** Generated operator passwords (CLI, when --password is not given). */
 export function generatePassword(): string {
   return randomBytes(15).toString("base64url");

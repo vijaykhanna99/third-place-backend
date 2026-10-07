@@ -87,6 +87,34 @@ const envSchema = z.object({
     .int()
     .min(0)
     .default(60 * 60 * 1000),
+
+  // web console + viewer accounts (step 14)
+  /**
+   * Browser origins allowed to call the API (the operator console), as a
+   * comma-separated list of exact origins — scheme, host and port, no path,
+   * no wildcard (spec §2.5). Unset: CORS stays closed (native clients only).
+   */
+  CORS_ORIGINS: optional(z.string()),
+  /** Opens POST /auth/register to the public (spec §3 Phase 2). Default closed. */
+  REGISTRATION_OPEN: z
+    .preprocess((v) => (v === "" ? undefined : v), z.enum(["true", "false"]).optional())
+    .default("false"),
+  /**
+   * How account emails leave the process: `log` writes them to the log
+   * (development, tests), `smtp` delivers through SMTP_URL.
+   */
+  MAIL_TRANSPORT: z
+    .preprocess((v) => (v === "" ? undefined : v), z.enum(["log", "smtp"]).optional())
+    .default("log"),
+  /** smtp(s)://user:pass@host:port — required when MAIL_TRANSPORT=smtp. */
+  SMTP_URL: optional(z.string().url()),
+  /** From header for account emails, e.g. "Third Place <no-reply@3rd-place.co.jp>". */
+  MAIL_FROM: optional(z.string().min(3)),
+  /**
+   * Public origin of the pages linked from account emails (the web console
+   * serves /account/verify-email and /account/reset-password). No trailing slash.
+   */
+  ACCOUNT_LINKS_BASE_URL: optional(z.string().url()),
 });
 
 /**
@@ -126,13 +154,68 @@ const strictEnvSchema = envSchema.superRefine((env, ctx) => {
       message: "R2_ENDPOINT or R2_ACCOUNT_ID is required when NODE_ENV=production",
     });
   }
+  // Account emails that only reach the log are lost for the person waiting for
+  // them; production with registration open must deliver them for real.
+  if (env.REGISTRATION_OPEN === "true" && env.MAIL_TRANSPORT !== "smtp") {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["MAIL_TRANSPORT"],
+      message: "must be smtp when REGISTRATION_OPEN=true in production",
+    });
+  }
+  if (env.MAIL_TRANSPORT === "smtp" || env.REGISTRATION_OPEN === "true") {
+    for (const key of ["SMTP_URL", "MAIL_FROM", "ACCOUNT_LINKS_BASE_URL"] as const) {
+      if (!env[key]) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [key],
+          message: "required for account emails when NODE_ENV=production",
+        });
+      }
+    }
+  }
 });
 
 export type Env = z.infer<typeof envSchema> & {
   appKeys: string[];
   /** Fastify `trustProxy` value: hop count, CIDR list, or false. */
   trustProxy: number | string[] | false;
+  /** Exact browser origins allowed by CORS; empty keeps CORS closed. */
+  corsOrigins: string[];
+  registrationOpen: boolean;
 };
+
+/**
+ * Parses CORS_ORIGINS into normalised exact origins. Anything that is not a
+ * plain http(s) origin — a path, a wildcard, a bare host — is a configuration
+ * error: an allowlist that is wrong by one character is worse than none.
+ */
+function parseCorsOrigins(raw: string | undefined): string[] {
+  if (!raw) return [];
+  const origins: string[] = [];
+  for (const item of raw.split(",")) {
+    // A trailing slash and letter case are forgiven; everything else must match.
+    const value = item.trim().replace(/\/$/, "");
+    if (!value) continue;
+    let url: URL;
+    try {
+      url = new URL(value);
+    } catch {
+      throw new Error(`Invalid environment configuration:\n  CORS_ORIGINS: "${value}" is not an origin`);
+    }
+    const isOrigin =
+      (url.protocol === "http:" || url.protocol === "https:") &&
+      url.origin.toLowerCase() === value.toLowerCase() &&
+      !url.hostname.includes("*");
+    if (!isOrigin) {
+      throw new Error(
+        `Invalid environment configuration:\n  CORS_ORIGINS: "${value}" must be an exact http(s) origin without path or wildcard`,
+      );
+    }
+    if (!origins.includes(url.origin)) origins.push(url.origin);
+  }
+  return origins;
+}
 
 function parseTrustProxy(raw: string | undefined): number | string[] | false {
   if (!raw) return false;
@@ -178,6 +261,8 @@ export function loadEnvFrom(
       .map((k) => k.trim())
       .filter((k) => k.length > 0),
     trustProxy: parseTrustProxy(env.TRUSTED_PROXIES),
+    corsOrigins: parseCorsOrigins(env.CORS_ORIGINS),
+    registrationOpen: env.REGISTRATION_OPEN === "true",
   };
 }
 
