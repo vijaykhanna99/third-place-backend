@@ -1,0 +1,61 @@
+name: Publish test media
+
+# One click in the Actions tab → a release named "test-media" carrying freshly
+# rendered MV-HEVC stereo clips: spatial .mov files (open on a Vision Pro:
+# Files, Photos or Safari play them in 3D with no server involved) and the HLS
+# bundles the upload pipeline takes. Nothing runs unless you start it.
+on:
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: Clip length in seconds
+        default: "60"
+      resolution:
+        description: WIDTHxHEIGHT
+        default: "1920x1080"
+
+permissions:
+  contents: write
+
+jobs:
+  render:
+    name: Render and publish
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - name: Select the newest stable Xcode on the runner
+        run: |
+          latest=$(ls -d /Applications/Xcode_*.app | grep -v beta | sort -V | tail -1)
+          sudo xcode-select -s "$latest"
+          xcodebuild -version
+      - name: Build the generator
+        working-directory: tools/mvhevc
+        run: ../../scripts/ci-run.sh "make-bundle build" swift build -c release
+      - name: Render clips
+        working-directory: tools/mvhevc
+        run: |
+          W=${RES%x*}; H=${RES#*x}
+          ../../scripts/ci-run.sh "render main" .build/release/make-bundle --out /tmp/media/main --label MAIN --hue 0.60 --seconds "$SECONDS_IN" --width "$W" --height "$H" --mov /tmp/media/stereo-test-main.mov
+          ../../scripts/ci-run.sh "render side" .build/release/make-bundle --out /tmp/media/side --label SIDE --hue 0.08 --seconds "$SECONDS_IN" --width "$W" --height "$H" --mov /tmp/media/stereo-test-side.mov
+          (cd /tmp/media/main && zip -qr ../hls-bundle-main.zip .)
+          (cd /tmp/media/side && zip -qr ../hls-bundle-side.zip .)
+          ls -la /tmp/media
+        env:
+          SECONDS_IN: ${{ inputs.seconds }}
+          RES: ${{ inputs.resolution }}
+      - name: Create or update the test-media release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          notes="Generated MV-HEVC stereo test clips (${{ inputs.seconds }} s, ${{ inputs.resolution }}), rendered on $(date -u +%Y-%m-%dT%H:%MZ) from ${GITHUB_SHA::7}.
+
+          - stereo-test-main.mov / stereo-test-side.mov: spatial video. Open on a Vision Pro (Files, Photos or Safari) to watch in 3D; the orange marker floats in front of the screen, L/R mark each eye.
+          - hls-bundle-main.zip / hls-bundle-side.zip: the HLS bundles for the upload pipeline (POST /api/v1/uploads)."
+          if gh release view test-media >/dev/null 2>&1; then
+            gh release edit test-media --prerelease --title "Test media (generated)" --notes "$notes"
+          else
+            gh release create test-media --prerelease --title "Test media (generated)" --notes "$notes"
+          fi
+          gh release upload test-media /tmp/media/stereo-test-main.mov /tmp/media/stereo-test-side.mov /tmp/media/hls-bundle-main.zip /tmp/media/hls-bundle-side.zip --clobber
+          echo "::notice title=release::https://github.com/${GITHUB_REPOSITORY}/releases/tag/test-media"

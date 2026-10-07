@@ -60,6 +60,17 @@ building, error-envelope mapping, telemetry POST). The app target's tests
 (`ThirdPlaceTests/`) run on the simulator: `xcodebuild test -scheme ThirdPlace -destination
 'platform=visionOS Simulator,name=Apple Vision Pro'`.
 
+## Watch without any setup (Vision Pro, one click)
+
+Actions → **Publish test media** → *Run workflow*. A macOS runner renders the stereo test
+clips and attaches them to the release
+[`test-media`](https://github.com/vijaykhanna99/third-place-backend/releases/tag/test-media):
+open that page in Safari on the Vision Pro while signed in to GitHub and tap
+`stereo-test-main.mov`. It is a spatial MV-HEVC file, so Safari, Files and Photos play it in
+3D: the orange marker floats in front of the screen, `L` and `R` each belong to one eye.
+This checks the content and the headset; the streaming path (tokens, angle switching,
+refresh) is checked with the setup below.
+
 ## Watch a real stream (Mac, Apple silicon)
 
 One command stands up the backend, renders two MV-HEVC stereo test clips (two camera

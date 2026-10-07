@@ -27,6 +27,9 @@ struct Options {
     var hue = 0.6
     var bitrate = 8_000_000
     var segmentSeconds = 2.0
+    /// Also write a spatial QuickTime file (same frames) that Files/Photos/Safari on
+    /// visionOS play stereoscopically without any server.
+    var mov: String?
 }
 
 func parse(_ args: [String]) -> Options {
@@ -44,8 +47,9 @@ func parse(_ args: [String]) -> Options {
         case "--hue": o.hue = Double(value()) ?? o.hue
         case "--bitrate": o.bitrate = Int(value()) ?? o.bitrate
         case "--segment-seconds": o.segmentSeconds = Double(value()) ?? o.segmentSeconds
+        case "--mov": o.mov = value()
         case "-h", "--help":
-            print("usage: make-bundle --out DIR [--label MAIN] [--seconds 20] [--fps 30] [--width 1920 --height 1080] [--hue 0.6] [--bitrate 8000000]")
+            print("usage: make-bundle --out DIR [--label MAIN] [--seconds 20] [--fps 30] [--width 1920 --height 1080] [--hue 0.6] [--bitrate 8000000] [--mov FILE.mov]")
             exit(0)
         default:
             FileHandle.standardError.write("unknown argument \(args[i])\n".data(using: .utf8)!)
@@ -215,6 +219,9 @@ let multiview: [CFString: Any] = [
     kVTCompressionPropertyKey_HeroEye: kCMFormatDescriptionHeroEye_Left,
     kVTCompressionPropertyKey_StereoCameraBaseline: 63_000,  // micrometres: typical interpupillary distance
     kVTCompressionPropertyKey_HorizontalDisparityAdjustment: 0,
+    // Spatial-video tagging so visionOS treats the file as stereo content.
+    kVTCompressionPropertyKey_ProjectionKind: kCMFormatDescriptionProjectionKind_Rectilinear,
+    kVTCompressionPropertyKey_HorizontalFieldOfView: 63_000,  // millidegrees
     kVTCompressionPropertyKey_AverageBitRate: options.bitrate,
     kVTCompressionPropertyKey_MaxKeyFrameInterval: options.fps * Int(options.segmentSeconds),
     kVTCompressionPropertyKey_AllowFrameReordering: false,
@@ -240,6 +247,33 @@ writer.add(input)
 guard writer.startWriting() else { fatalError("startWriting failed: \(String(describing: writer.error))") }
 writer.startSession(atSourceTime: .zero)
 
+// Optional spatial .mov: a second writer fed the same tagged frames.
+var movWriter: AVAssetWriter?
+var movInput: AVAssetWriterInput?
+var movAdaptor: AVAssetWriterInputTaggedPixelBufferGroupAdaptor?
+if let movPath = options.mov {
+    let movURL = URL(fileURLWithPath: movPath)
+    try? FileManager.default.removeItem(at: movURL)
+    let mw = try AVAssetWriter(outputURL: movURL, fileType: .mov)
+    let mi = AVAssetWriterInput(mediaType: .video, outputSettings: settings)
+    mi.expectsMediaDataInRealTime = false
+    let ma = AVAssetWriterInputTaggedPixelBufferGroupAdaptor(
+        assetWriterInput: mi,
+        sourcePixelBufferAttributes: [
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+            kCVPixelBufferWidthKey as String: options.width,
+            kCVPixelBufferHeightKey as String: options.height,
+        ]
+    )
+    guard mw.canAdd(mi) else { fatalError("mov writer refuses the video input") }
+    mw.add(mi)
+    guard mw.startWriting() else { fatalError("mov startWriting failed: \(String(describing: mw.error))") }
+    mw.startSession(atSourceTime: .zero)
+    movWriter = mw
+    movInput = mi
+    movAdaptor = ma
+}
+
 let renderer = FrameRenderer(width: options.width, height: options.height, label: options.label, hue: options.hue)
 let frameCount = Int(options.seconds * Double(options.fps))
 let queue = DispatchQueue(label: "make-bundle.encode")
@@ -264,6 +298,14 @@ input.requestMediaDataWhenReady(on: queue) {
             FileHandle.standardError.write("append failed at frame \(frame): \(String(describing: writer.error))\n".data(using: .utf8)!)
             exit(1)
         }
+        if let movAdaptor, let movInput {
+            // The .mov input is driven from this loop too; wait for it when it lags.
+            while !movInput.isReadyForMoreMediaData { usleep(2000) }
+            if !movAdaptor.appendTaggedBuffers(tagged, withPresentationTime: pts) {
+                FileHandle.standardError.write("mov append failed at frame \(frame): \(String(describing: movWriter?.error))\n".data(using: .utf8)!)
+                exit(1)
+            }
+        }
         frame += 1
         if frame % (options.fps * 5) == 0 { print("  \(frame)/\(frameCount) frames") }
     }
@@ -273,6 +315,14 @@ let finished = DispatchSemaphore(value: 0)
 writer.finishWriting { finished.signal() }
 finished.wait()
 if writer.status != .completed { fatalError("encoding failed: \(String(describing: writer.error))") }
+if let movWriter, let movInput {
+    movInput.markAsFinished()
+    let movDone = DispatchSemaphore(value: 0)
+    movWriter.finishWriting { movDone.signal() }
+    movDone.wait()
+    if movWriter.status != .completed { fatalError("mov encoding failed: \(String(describing: movWriter.error))") }
+    print("wrote spatial video \(movWriter.outputURL.path)")
+}
 if let failure = sink.failure { fatalError("segment write failed: \(failure)") }
 
 // Playlists. REQ-VIDEO-LAYOUT marks the variant as stereoscopic (HLS spec rev. 12).

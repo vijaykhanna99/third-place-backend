@@ -182,7 +182,7 @@ jobs:
       - name: Render two short MV-HEVC stereo bundles (real VideoToolbox encode)
         working-directory: tools/mvhevc
         run: |
-          ../../scripts/ci-run.sh "make-bundle main" .build/release/make-bundle --out /tmp/bundles/main --label MAIN --hue 0.60 --seconds 6 --width 1280 --height 720
+          ../../scripts/ci-run.sh "make-bundle main" .build/release/make-bundle --out /tmp/bundles/main --label MAIN --hue 0.60 --seconds 6 --width 1280 --height 720 --mov /tmp/bundles/main.mov
           ../../scripts/ci-run.sh "make-bundle side" .build/release/make-bundle --out /tmp/bundles/side --label SIDE --hue 0.08 --seconds 6 --width 1280 --height 720
           (cd /tmp/bundles/main && zip -qr ../main.zip .)
           (cd /tmp/bundles/side && zip -qr ../side.zip .)
@@ -195,6 +195,7 @@ jobs:
           path: |
             /tmp/bundles/main.zip
             /tmp/bundles/side.zip
+            /tmp/bundles/main.mov
           retention-days: 7
       - name: Run the app's unit tests on the simulator
         working-directory: visionos-app
