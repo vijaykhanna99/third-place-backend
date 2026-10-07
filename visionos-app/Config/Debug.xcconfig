@@ -1,6 +1,6 @@
 // Local development: API on this Mac (pnpm dev) and MinIO as the media origin.
-// The simulator reaches the host's loopback directly. xcconfig cannot contain
-// `//` inside a value, so the scheme is split with `$()` (an empty substitution).
-API_BASE_URL = http:$()//127.0.0.1:3000
+// The simulator reaches the host's loopback directly. xcconfig treats `//` as a
+// comment, so the slashes are split with `$()` (an empty substitution).
+API_BASE_URL = http:/$()/127.0.0.1:3000
 APP_KEY = dev-app-key
-MEDIA_ORIGIN = http:$()//127.0.0.1:9000/tplace-media-dev/media
+MEDIA_ORIGIN = http:/$()/127.0.0.1:9000/tplace-media-dev/media
