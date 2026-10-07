@@ -2,7 +2,7 @@
   "name": "third-place-backend",
   "version": "0.1.0",
   "private": true,
-  "description": "Third Place immersive video platform — backend API server",
+  "description": "Third Place immersive video platform \u2014 backend API server",
   "type": "module",
   "engines": {
     "node": ">=22"
@@ -19,7 +19,7 @@
     "build": "tsc -p tsconfig.build.json",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint src test",
+    "lint": "eslint src test scripts",
     "format": "prettier --write src test",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -31,7 +31,8 @@
     "api:docs": "redocly build-docs openapi.yaml -o docs/api.html",
     "mock": "prism mock openapi.yaml -p 4010",
     "db:up": "docker-compose up -d",
-    "db:down": "docker-compose down"
+    "db:down": "docker-compose down",
+    "e2e": "tsx scripts/e2e.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1146.0",

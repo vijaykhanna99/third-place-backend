@@ -40,7 +40,9 @@ Postgres maps to host port **5433** (a native Postgres occupies 5432 on this mac
 - Responses in the integration suites are validated against `openapi.yaml`
   (`test/helpers/contract.ts`), so server/contract drift fails the build.
 
-Checks: `pnpm typecheck` · `pnpm lint` · `pnpm test` · `pnpm api:lint`
+Checks: `pnpm typecheck` · `pnpm lint` · `pnpm test` · `pnpm api:lint` · `pnpm build && pnpm e2e`
+(the e2e script starts the built API and worker as real processes and drives the whole
+operator → viewer flow over HTTP; it needs `DATABASE_URL`, `REDIS_URL` and the `R2_*` settings)
 Edge Worker (separate package): `cd edge-worker && pnpm install && pnpm typecheck && pnpm test`
 
 ## Configuration
@@ -68,8 +70,11 @@ the edge Worker maps one onto the other; locally the base URL points at the buck
 ## CI and container image
 
 - `.github/workflows/ci.yml` runs typecheck, lint, the contract lint, the full test
-  suite (Postgres and Redis as service containers, MinIO as a container step) and the
-  production build on every push and pull request, then builds the container image.
+  suite (Postgres and Redis as service containers, MinIO as a container step), the
+  production build and the HTTP end-to-end smoke test on every push and pull request,
+  then builds the container image; the edge Worker and the visionOS app (Xcode, macOS
+  runner) build and test in parallel jobs. Each step runs through `scripts/ci-run.sh`,
+  which republishes a failing step's output as check-run annotations.
 - `Dockerfile` is a multi-stage build producing one image for the API and the worker:
 
 ```bash
@@ -130,3 +135,4 @@ test/               Vitest suites (unit + integration against the Docker service
 | 8 | Metrics endpoint, janitor job, rate limiting, hardening pass (helmet, body limits, readiness probe) | ✅ done |
 | 9 | visionOS app: API client from the contract, browse/search/program/episode screens, immersive MV-HEVC player with angle switcher | code written, not compiled (no Xcode available) |
 | 10 | Deployment preparation: compose stack, Caddy, env checklist, Cloudflare/Worker notes, runbook (`deploy/`) | prepared, nothing deployed |
+| 11 | Cloud verification: CI runs the HTTP end-to-end smoke test (`pnpm e2e`) against built API + worker processes, the Worker suite, the image build, and builds the visionOS app with Xcode on a macOS runner; failures surface as check-run annotations | ✅ done |

@@ -348,6 +348,35 @@ describe.runIf(Boolean(DB_URL && S3_ENDPOINT && REDIS_URL))("uploads integration
     expectContract("POST", "/api/v1/uploads/{uploadID}/complete", 400, complete.json());
   });
 
+  it("accepts a bodiless complete even when the client sends a JSON content type", async () => {
+    const zip = makeZip(validBundle());
+    const init = await app.inject({
+      method: "POST",
+      url: "/api/v1/uploads",
+      headers: authed,
+      payload: { fileName: "bundle.zip", byteSize: zip.length, checksum: createHash("sha256").update(zip).digest("hex") },
+    });
+    const { uploadID, uploadURL } = init.json<{ uploadID: string; uploadURL: string }>();
+    await fetch(uploadURL, { method: "PUT", body: new Uint8Array(zip), headers: { "content-length": String(zip.length) } });
+    const complete = await app.inject({
+      method: "POST",
+      url: `/api/v1/uploads/${uploadID}/complete`,
+      headers: { ...authed, "content-type": "application/json" },
+      payload: "",
+    });
+    expect(complete.statusCode, complete.body).toBe(200);
+    expect(complete.json<{ status: string }>().status).toBe("queued");
+    // A body that IS required still has to be there.
+    const empty = await app.inject({
+      method: "POST",
+      url: "/api/v1/uploads",
+      headers: { ...authed, "content-type": "application/json" },
+      payload: "",
+    });
+    expect(empty.statusCode).toBe(400);
+    expect(empty.json<{ error: { code: string } }>().error.code).toBe("validation_failed");
+  });
+
   it("rejects declarations the contract rules out before reserving anything", async () => {
     const checksum = "a".repeat(64);
     const bad = [

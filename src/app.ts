@@ -68,6 +68,20 @@ export function buildApp(env: Env): FastifyInstance {
 
   app.decorate("env", env);
 
+  // Several POST endpoints take no body (complete, delete, revoke). Clients
+  // routinely send `Content-Type: application/json` on every request, which
+  // Fastify's default parser rejects when the body is empty. Treat an empty
+  // body as "no body"; route schemas still 400 where a body is required.
+  const parseJson = app.getDefaultJsonParser("error", "error");
+  app.removeContentTypeParser("application/json");
+  app.addContentTypeParser("application/json", { parseAs: "string" }, (req, body, done) => {
+    if (typeof body === "string" && body.trim().length === 0) {
+      done(null, undefined);
+      return;
+    }
+    void parseJson(req, body as string, done);
+  });
+
   if (env.DATABASE_URL) {
     const { sql, db } = createDb(env.DATABASE_URL);
     app.decorate("db", db);
