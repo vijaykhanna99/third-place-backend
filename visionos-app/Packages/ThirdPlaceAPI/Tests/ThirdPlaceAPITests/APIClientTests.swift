@@ -8,7 +8,7 @@ private final class StubTransport: HTTPTransport, @unchecked Sendable {
     var body = Data()
     private(set) var requests: [URLRequest] = []
 
-    func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+    func send(_ request: URLRequest) async throws -> (Data, URLResponse) {
         requests.append(request)
         let response = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!
         return (body, response)

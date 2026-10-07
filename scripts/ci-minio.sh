@@ -15,9 +15,11 @@ if docker run -d --name minio -p 9000:9000 \
   done
 else
   echo "minio image unavailable; starting moto S3 server instead"
-  python3 -m pip install --quiet "moto[server]"
-  # The moto server must accept the same static credentials as MinIO does.
-  nohup python3 -m moto.server -H 127.0.0.1 -p 9000 > /tmp/moto.log 2>&1 &
+  # A venv keeps moto away from the runner's system site-packages (whose
+  # pyOpenSSL/urllib3 pairing is broken on current ubuntu images).
+  python3 -m venv /tmp/moto-venv
+  /tmp/moto-venv/bin/pip install --quiet "moto[server]"
+  nohup /tmp/moto-venv/bin/moto_server -H 127.0.0.1 -p 9000 > /tmp/moto.log 2>&1 &
   for i in $(seq 1 60); do
     if curl -s -o /dev/null http://127.0.0.1:9000/; then break; fi
     if [ "$i" -eq 60 ]; then echo "moto did not start"; cat /tmp/moto.log; exit 1; fi

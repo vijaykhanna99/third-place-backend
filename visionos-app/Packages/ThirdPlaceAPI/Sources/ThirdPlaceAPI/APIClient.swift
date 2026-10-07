@@ -23,11 +23,17 @@ public enum APIError: Error, Equatable, Sendable {
 }
 
 /// Minimal surface of URLSession used by the client, so tests can stub transport.
+/// Named `send` rather than `data(for:)`: Foundation's method carries a defaulted
+/// `delegate:` parameter and so cannot witness a protocol requirement directly.
 public protocol HTTPTransport: Sendable {
-    func data(for request: URLRequest) async throws -> (Data, URLResponse)
+    func send(_ request: URLRequest) async throws -> (Data, URLResponse)
 }
 
-extension URLSession: HTTPTransport {}
+extension URLSession: HTTPTransport {
+    public func send(_ request: URLRequest) async throws -> (Data, URLResponse) {
+        try await data(for: request)
+    }
+}
 
 /// Client for the public (app-key gated) surface of the Third Place API.
 ///
@@ -140,7 +146,7 @@ public final class APIClient: @unchecked Sendable {
 
     private func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
         do {
-            let (data, response) = try await transport.data(for: request)
+            let (data, response) = try await transport.send(request)
             guard let http = response as? HTTPURLResponse else { throw APIError.transport("non-HTTP response") }
             return (data, http)
         } catch let error as APIError {
