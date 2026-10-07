@@ -169,25 +169,21 @@ jobs:
         run: ../scripts/ci-run.sh "simulator" ../scripts/ci-visionos-sim.sh
         working-directory: visionos-app
       - name: Build the app for the visionOS simulator
-        run: |
-          echo "::notice title=build step::pwd=$(pwd) shell=$BASH_VERSION user=$(id -un) files=$(ls -m)"
-          echo "::notice title=build step::scripts: $(ls -l ../scripts | tr '\n' ' ')"
-          echo "::notice title=build step::xcodebuild: $(xcodebuild -version | tr '\n' ' ')"
-          set -x
+        working-directory: visionos-app
+        run: >-
           ../scripts/ci-run.sh "xcodebuild" ../scripts/ci-filter.sh
-            "error:|warning: .*(deprecated|unused)|BUILD|Compiling|Linking|note: Using|xcodebuild: " \
-            xcodebuild build -project ThirdPlace.xcodeproj -scheme ThirdPlace -configuration Debug \
-            -destination "generic/platform=visionOS Simulator" \
-            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO -skipPackagePluginValidation
+          "error:|warning: .*(deprecated|unused)|BUILD|Compiling|Linking|note: Using|xcodebuild: "
+          xcodebuild build -project ThirdPlace.xcodeproj -scheme ThirdPlace -configuration Debug
+          -destination "generic/platform=visionOS Simulator"
+          CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO -skipPackagePluginValidation
       - name: Run the app's unit tests on the simulator
+        working-directory: visionos-app
         run: >-
           ../scripts/ci-run.sh "xcodebuild test" ../scripts/ci-filter.sh
           "error:|Test Case|Test Suite|Executed|BUILD|TEST|xcodebuild: "
           xcodebuild test -project ThirdPlace.xcodeproj -scheme ThirdPlace -configuration Debug
           -destination "platform=visionOS Simulator,id=$(cat .sim-udid)"
           CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO -skipPackagePluginValidation
-
-        working-directory: visionos-app
 
   image:
     name: Container image builds
