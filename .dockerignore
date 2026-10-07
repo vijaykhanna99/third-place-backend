@@ -11,7 +11,6 @@ docs
 .DS_Store
 test
 edge-worker
-console
 visionos-app
 deploy
 docker-compose.yml
