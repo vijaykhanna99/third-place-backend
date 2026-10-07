@@ -124,25 +124,33 @@ jobs:
           sudo xcode-select -s "$latest"
           xcodebuild -version
           swift --version
-      - name: API package diagnostics (plain compiler output)
+      - name: API package diagnostics (plain compiler output, full compile)
         run: >-
-          ../../../scripts/ci-run.sh "swiftc typecheck" bash -c
-          'xcrun swiftc -typecheck -swift-version 5 -parse-as-library Sources/ThirdPlaceAPI/*.swift'
+          ../../../scripts/ci-run.sh "swiftc emit-library" bash -c
+          'xcrun swiftc -emit-library -emit-module -module-name ThirdPlaceAPI -swift-version 5 -parse-as-library
+          -emit-module-path /tmp/ThirdPlaceAPI.swiftmodule -o /tmp/libThirdPlaceAPI.dylib Sources/ThirdPlaceAPI/*.swift'
+        working-directory: visionos-app/Packages/ThirdPlaceAPI
+      - name: API package via xcodebuild (diagnostic only)
+        continue-on-error: true
+        run: >-
+          ../../../scripts/ci-run.sh "xcodebuild package" ../../../scripts/ci-filter.sh
+          "error:|warning:|BUILD|xcodebuild: "
+          xcodebuild build -scheme ThirdPlaceAPI -destination "platform=macOS" -derivedDataPath /tmp/dd-package
         working-directory: visionos-app/Packages/ThirdPlaceAPI
       - name: API package library builds (macOS)
         run: >-
           ../../../scripts/ci-run.sh "swift build (library)" ../../../scripts/ci-filter.sh
-          "error|warning|fatal|Stack dump|Compiling|Build|Emitting|Linking"
-          swift build -v
+          "error|warning|fatal|Stack dump|Compiling|Build|Linking"
+          swift build --disable-index-store
         working-directory: visionos-app/Packages/ThirdPlaceAPI
       - name: API package tests build (macOS)
         run: >-
           ../../../scripts/ci-run.sh "swift build (tests)" ../../../scripts/ci-filter.sh
-          "error|warning|fatal|Stack dump|Compiling|Build|Emitting|Linking"
-          swift build -v --build-tests
+          "error|warning|fatal|Stack dump|Compiling|Build|Linking"
+          swift build --build-tests --disable-index-store
         working-directory: visionos-app/Packages/ThirdPlaceAPI
       - name: API package tests (macOS)
-        run: ../../../scripts/ci-run.sh "swift test" swift test --skip-build
+        run: ../../../scripts/ci-run.sh "swift test" swift test --skip-build --disable-index-store
         working-directory: visionos-app/Packages/ThirdPlaceAPI
       - name: Install XcodeGen
         run: ../scripts/ci-run.sh "xcodegen install" brew install xcodegen
