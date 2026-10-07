@@ -29,7 +29,7 @@ final class PlayerCoordinator {
 
     let player = AVPlayer()
     private(set) var state: State = .loading
-    private(set) var streams: [Stream] = []
+    private(set) var streams: [StreamAngle] = []
     private(set) var selectedIndex = 0
     private(set) var expiresAt: Date?
 
@@ -56,7 +56,7 @@ final class PlayerCoordinator {
         }
     }
 
-    var currentStream: Stream? {
+    var currentStream: StreamAngle? {
         streams.indices.contains(selectedIndex) ? streams[selectedIndex] : nil
     }
 

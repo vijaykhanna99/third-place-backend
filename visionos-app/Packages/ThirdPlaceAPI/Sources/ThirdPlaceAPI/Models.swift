@@ -27,8 +27,8 @@ public struct ProgramSummary: Codable, Hashable, Identifiable, Sendable {
     public let updatedAt: Date
 }
 
-/// `Stream` — one camera angle. `streamURL` carries a 15-minute token.
-public struct Stream: Codable, Hashable, Sendable {
+/// Contract schema `Stream` — one camera angle (named StreamAngle in Swift: Foundation already has a `Stream`). `streamURL` carries a 15-minute token.
+public struct StreamAngle: Codable, Hashable, Sendable {
     public let name: String
     public let streamURL: URL
 }
@@ -41,7 +41,7 @@ public struct Episode: Codable, Hashable, Identifiable, Sendable {
     public let description: String
     public let durationSec: Int
     public let thumbnailURL: URL?
-    public let streams: [Stream]
+    public let streams: [StreamAngle]
     public let publishedAt: Date
 }
 
@@ -145,7 +145,7 @@ public struct SearchResponse: Codable, Sendable {
 /// `GET /api/v1/episodes/{episodeID}/stream`
 public struct StreamsResponse: Codable, Hashable, Sendable {
     public let episodeID: String
-    public let streams: [Stream]
+    public let streams: [StreamAngle]
     /// Every `streamURL` token dies at this instant; refresh before then.
     public let expiresAt: Date
 }
