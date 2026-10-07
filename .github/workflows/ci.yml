@@ -129,8 +129,17 @@ jobs:
           ../../../scripts/ci-run.sh "swiftc typecheck" bash -c
           'xcrun swiftc -typecheck -swift-version 5 -parse-as-library Sources/ThirdPlaceAPI/*.swift'
         working-directory: visionos-app/Packages/ThirdPlaceAPI
-      - name: API package builds (macOS)
-        run: ../../../scripts/ci-run.sh "swift build" swift build --build-tests
+      - name: API package library builds (macOS)
+        run: >-
+          ../../../scripts/ci-run.sh "swift build (library)" ../../../scripts/ci-filter.sh
+          "error|warning|fatal|Stack dump|Compiling|Build|Emitting|Linking"
+          swift build -v
+        working-directory: visionos-app/Packages/ThirdPlaceAPI
+      - name: API package tests build (macOS)
+        run: >-
+          ../../../scripts/ci-run.sh "swift build (tests)" ../../../scripts/ci-filter.sh
+          "error|warning|fatal|Stack dump|Compiling|Build|Emitting|Linking"
+          swift build -v --build-tests
         working-directory: visionos-app/Packages/ThirdPlaceAPI
       - name: API package tests (macOS)
         run: ../../../scripts/ci-run.sh "swift test" swift test --skip-build
