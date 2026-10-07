@@ -3,10 +3,12 @@
   "streams": [
     {
       "name": "Main",
+      "uploadID": "01890a5d-ac96-774b-b111-000000000801",
       "streamURL": "https://media.3rd-place.example/uploads/01890a5d-ac96-774b-b111-000000000801/index.m3u8?token=v1.tok301m.fresh"
     },
     {
       "name": "Side",
+      "uploadID": "01890a5d-ac96-774b-b111-000000000802",
       "streamURL": "https://media.3rd-place.example/uploads/01890a5d-ac96-774b-b111-000000000802/index.m3u8?token=v1.tok301s.fresh"
     }
   ],

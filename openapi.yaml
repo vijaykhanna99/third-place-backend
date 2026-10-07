@@ -123,10 +123,12 @@ paths:
     post:
       operationId: register
       tags: [auth]
-      summary: Register an account (externally closed in v1)
+      summary: Register a viewer account
       description: |
-        Deployed from day one but returns `403 registration_closed` to external calls in v1.
-        Operator accounts are issued via the server-side seed CLI. Public access opens in Phase 2.
+        Open only when the deployment sets `REGISTRATION_OPEN=true`; otherwise answers
+        `403 registration_closed`. Creates a `user` account, signs it in, and emails a
+        verification link. Operator accounts are always issued via the server-side seed CLI.
+        Shares the public per-IP rate limit.
       requestBody:
         required: true
         content:
@@ -134,13 +136,13 @@ paths:
             schema: { $ref: "#/components/schemas/RegisterRequest" }
       responses:
         "200":
-          description: Account created (internal issuance only in v1).
+          description: Account created and signed in.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/RegisterResponse" }
         "400": { $ref: "#/components/responses/ValidationFailed" }
         "403":
-          description: Registration is externally closed in v1.
+          description: Registration is closed on this deployment.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -305,19 +307,22 @@ paths:
     post:
       operationId: requestEmailVerification
       tags: [auth]
-      summary: Request an email verification token (dormant in v1)
-      description: Implemented but a no-op until an email provider is wired (Phase 2). Spec §4.7.
+      summary: Email a verification link to the signed-in account
+      description: |
+        Issues a single-use token (24 h) and emails the verification link. A no-op for an
+        already verified address, and a no-op when the deployment has no email transport
+        configured (`MAIL_TRANSPORT`). Spec §4.7.
       security: [{ BearerAuth: [] }]
       responses:
         "202":
-          description: Accepted (send is a no-op in v1).
+          description: Accepted.
         "401": { $ref: "#/components/responses/Unauthenticated" }
 
   /api/v1/auth/email/verify:
     post:
       operationId: verifyEmail
       tags: [auth]
-      summary: Verify email with a token (dormant in v1)
+      summary: Verify email with a token from the emailed link
       requestBody:
         required: true
         content:
@@ -351,8 +356,11 @@ paths:
     post:
       operationId: requestPasswordReset
       tags: [auth]
-      summary: Request a password-reset token (dormant in v1)
-      description: Always responds 202 regardless of whether the identifier exists (no account oracle).
+      summary: Email a password-reset link
+      description: |
+        Issues a single-use token (30 min) and emails the reset link when the identifier names
+        an account. Always responds 202 regardless of whether the identifier exists (no account
+        oracle). Shares the public per-IP rate limit.
       requestBody:
         required: true
         content:
@@ -364,14 +372,14 @@ paths:
                 identifier: { type: string, description: Handle or email address. }
       responses:
         "202":
-          description: Accepted (send is a no-op in v1).
+          description: Accepted.
         "400": { $ref: "#/components/responses/ValidationFailed" }
 
   /api/v1/auth/password/reset:
     post:
       operationId: resetPassword
       tags: [auth]
-      summary: Reset password with a token (dormant in v1)
+      summary: Reset password with a token from the emailed link
       description: All sessions for the account are invalidated on success.
       requestBody:
         required: true
@@ -735,8 +743,10 @@ paths:
                 episodeID: 01890a5d-ac96-774b-b111-000000000301
                 streams:
                   - name: Main
+                    uploadID: 01890a5d-ac96-774b-b111-000000000801
                     streamURL: https://media.3rd-place.example/uploads/01890a5d-ac96-774b-b111-000000000801/index.m3u8?token=v1.tok301m.fresh
                   - name: Side
+                    uploadID: 01890a5d-ac96-774b-b111-000000000802
                     streamURL: https://media.3rd-place.example/uploads/01890a5d-ac96-774b-b111-000000000802/index.m3u8?token=v1.tok301s.fresh
                 expiresAt: "2026-08-06T04:35:00Z"
         "403": { $ref: "#/components/responses/AppKeyRequired" }
@@ -1296,11 +1306,15 @@ components:
 
     Account:
       type: object
-      required: [did, handle, email, displayName, description, avatarURL, createdAt, updatedAt]
+      required: [did, handle, email, emailVerifiedAt, displayName, description, avatarURL, createdAt, updatedAt]
       properties:
         did: { type: string }
         handle: { type: string }
         email: { type: string, format: email }
+        emailVerifiedAt:
+          type: [string, "null"]
+          format: date-time
+          description: When the address was confirmed through the emailed link; null until then.
         displayName: { type: string }
         description: { type: string }
         avatarURL: { type: [string, "null"], format: uri }
@@ -1310,6 +1324,7 @@ components:
         did: did:tplace:01890a5d-ac96-774b-b111-00000000a001
         handle: third-place-ops
         email: ops@3rd-place.co.jp
+        emailVerifiedAt: "2026-08-06T03:05:00Z"
         displayName: Third Place Ops
         description: Operator account for the Third Place catalog.
         avatarURL: null
@@ -1353,11 +1368,15 @@ components:
     Stream:
       type: object
       description: One camera angle. `streamURL` carries a fresh 15-minute token.
-      required: [name, streamURL]
+      required: [name, uploadID, streamURL]
       properties:
         name:
           type: string
           description: Angle display name, e.g. "Main", "Side", "Overhead".
+        uploadID:
+          type: string
+          format: uuid
+          description: The upload backing this angle. Operators pass it back in `streams[]` on update to keep the angle.
         streamURL: { type: string, format: uri }
 
     Episode:
@@ -1646,8 +1665,10 @@ components:
                 thumbnailURL: https://media.3rd-place.example/thumbs/ep-s01e01.jpg
                 streams:
                   - name: Main
+                    uploadID: 01890a5d-ac96-774b-b111-000000000801
                     streamURL: https://media.3rd-place.example/uploads/01890a5d-ac96-774b-b111-000000000801/index.m3u8?token=v1.tok301m
                   - name: Side
+                    uploadID: 01890a5d-ac96-774b-b111-000000000807
                     streamURL: https://media.3rd-place.example/uploads/01890a5d-ac96-774b-b111-000000000807/index.m3u8?token=v1.tok301s
                 publishedAt: "2026-07-01T12:00:00Z"
               - id: 01890a5d-ac96-774b-b111-000000000302
@@ -1658,6 +1679,7 @@ components:
                 thumbnailURL: https://media.3rd-place.example/thumbs/ep-s01e02.jpg
                 streams:
                   - name: Main
+                    uploadID: 01890a5d-ac96-774b-b111-000000000802
                     streamURL: https://media.3rd-place.example/uploads/01890a5d-ac96-774b-b111-000000000802/index.m3u8?token=v1.tok302m
                 publishedAt: "2026-07-08T12:00:00Z"
               - id: 01890a5d-ac96-774b-b111-000000000303
@@ -1668,6 +1690,7 @@ components:
                 thumbnailURL: https://media.3rd-place.example/thumbs/ep-s01e03.jpg
                 streams:
                   - name: Main
+                    uploadID: 01890a5d-ac96-774b-b111-000000000803
                     streamURL: https://media.3rd-place.example/uploads/01890a5d-ac96-774b-b111-000000000803/index.m3u8?token=v1.tok303m
                 publishedAt: "2026-07-15T12:00:00Z"
           - id: 01890a5d-ac96-774b-b111-000000000202
@@ -1683,6 +1706,7 @@ components:
                 thumbnailURL: https://media.3rd-place.example/thumbs/ep-s02e01.jpg
                 streams:
                   - name: Main
+                    uploadID: 01890a5d-ac96-774b-b111-000000000804
                     streamURL: https://media.3rd-place.example/uploads/01890a5d-ac96-774b-b111-000000000804/index.m3u8?token=v1.tok304m
                 publishedAt: "2026-07-22T12:00:00Z"
               - id: 01890a5d-ac96-774b-b111-000000000305
@@ -1693,6 +1717,7 @@ components:
                 thumbnailURL: https://media.3rd-place.example/thumbs/ep-s02e02.jpg
                 streams:
                   - name: Main
+                    uploadID: 01890a5d-ac96-774b-b111-000000000805
                     streamURL: https://media.3rd-place.example/uploads/01890a5d-ac96-774b-b111-000000000805/index.m3u8?token=v1.tok305m
                 publishedAt: "2026-07-29T12:00:00Z"
               - id: 01890a5d-ac96-774b-b111-000000000306
@@ -1703,5 +1728,6 @@ components:
                 thumbnailURL: https://media.3rd-place.example/thumbs/ep-s02e03.jpg
                 streams:
                   - name: Main
+                    uploadID: 01890a5d-ac96-774b-b111-000000000806
                     streamURL: https://media.3rd-place.example/uploads/01890a5d-ac96-774b-b111-000000000806/index.m3u8?token=v1.tok306m
                 publishedAt: "2026-08-01T10:00:00Z"

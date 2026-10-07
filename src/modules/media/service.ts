@@ -6,7 +6,7 @@ import type { StreamUrlIssuer } from "./stream-urls.js";
 
 export interface StreamsResponse {
   episodeID: string;
-  streams: { name: string; streamURL: string }[];
+  streams: { name: string; uploadID: string; streamURL: string }[];
   expiresAt: string;
 }
 
@@ -46,7 +46,11 @@ export class MediaService {
     const now = new Date();
     return {
       episodeID: episodeId,
-      streams: rows.map((r) => ({ name: r.name, streamURL: this.issuer.issue(r.uploadId, now).url })),
+      streams: rows.map((r) => ({
+        name: r.name,
+        uploadID: r.uploadId,
+        streamURL: this.issuer.issue(r.uploadId, now).url,
+      })),
       expiresAt: this.issuer.expiresAt(now).toISOString(),
     };
   }

@@ -39,10 +39,12 @@
           "streams": [
             {
               "name": "Main",
+              "uploadID": "01890a5d-ac96-774b-b111-000000000801",
               "streamURL": "https://media.3rd-place.example/uploads/01890a5d-ac96-774b-b111-000000000801/index.m3u8?token=v1.tok301m"
             },
             {
               "name": "Side",
+              "uploadID": "01890a5d-ac96-774b-b111-000000000807",
               "streamURL": "https://media.3rd-place.example/uploads/01890a5d-ac96-774b-b111-000000000807/index.m3u8?token=v1.tok301s"
             }
           ],
@@ -58,6 +60,7 @@
           "streams": [
             {
               "name": "Main",
+              "uploadID": "01890a5d-ac96-774b-b111-000000000802",
               "streamURL": "https://media.3rd-place.example/uploads/01890a5d-ac96-774b-b111-000000000802/index.m3u8?token=v1.tok302m"
             }
           ],
@@ -73,6 +76,7 @@
           "streams": [
             {
               "name": "Main",
+              "uploadID": "01890a5d-ac96-774b-b111-000000000803",
               "streamURL": "https://media.3rd-place.example/uploads/01890a5d-ac96-774b-b111-000000000803/index.m3u8?token=v1.tok303m"
             }
           ],
@@ -96,6 +100,7 @@
           "streams": [
             {
               "name": "Main",
+              "uploadID": "01890a5d-ac96-774b-b111-000000000804",
               "streamURL": "https://media.3rd-place.example/uploads/01890a5d-ac96-774b-b111-000000000804/index.m3u8?token=v1.tok304m"
             }
           ],
@@ -111,6 +116,7 @@
           "streams": [
             {
               "name": "Main",
+              "uploadID": "01890a5d-ac96-774b-b111-000000000805",
               "streamURL": "https://media.3rd-place.example/uploads/01890a5d-ac96-774b-b111-000000000805/index.m3u8?token=v1.tok305m"
             }
           ],
@@ -126,6 +132,7 @@
           "streams": [
             {
               "name": "Main",
+              "uploadID": "01890a5d-ac96-774b-b111-000000000806",
               "streamURL": "https://media.3rd-place.example/uploads/01890a5d-ac96-774b-b111-000000000806/index.m3u8?token=v1.tok306m"
             }
           ],

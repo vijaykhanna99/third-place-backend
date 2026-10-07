@@ -30,6 +30,8 @@ public struct ProgramSummary: Codable, Hashable, Identifiable, Sendable {
 /// Contract schema `Stream` — one camera angle (named StreamAngle in Swift: Foundation already has a `Stream`). `streamURL` carries a 15-minute token.
 public struct StreamAngle: Codable, Hashable, Sendable {
     public let name: String
+    /// The upload backing this angle (operators pass it back on update).
+    public let uploadID: String
     public let streamURL: URL
 }
 
@@ -191,6 +193,94 @@ public struct PlaybackEvent: Codable, Hashable, Sendable {
         try c.encode(quality, forKey: .quality)
         try c.encode(sessionUUID, forKey: .sessionUUID)
     }
+}
+
+// MARK: - Accounts (spec §4)
+
+/// `TokenResponse` — login / refresh.
+public struct TokenResponse: Codable, Hashable, Sendable {
+    public let did: String
+    public let handle: String
+    public let accessToken: String
+    public let refreshToken: String
+    /// Access-token validity in seconds.
+    public let expiresIn: Int
+}
+
+/// `RegisterResponse` — the new profile plus its first token pair.
+public struct RegisterResponse: Codable, Hashable, Sendable {
+    public let did: String
+    public let handle: String
+    public let email: String
+    public let displayName: String
+    public let avatarURL: URL?
+    public let createdAt: Date
+    public let accessToken: String
+    public let refreshToken: String
+    public let expiresIn: Int
+
+    public var tokens: TokenResponse {
+        TokenResponse(did: did, handle: handle, accessToken: accessToken, refreshToken: refreshToken, expiresIn: expiresIn)
+    }
+}
+
+/// `Account` — `GET /api/v1/account`.
+public struct Account: Codable, Hashable, Sendable {
+    public let did: String
+    public let handle: String
+    public let email: String
+    /// Nil until the address was confirmed through the emailed link.
+    public let emailVerifiedAt: Date?
+    public let displayName: String
+    public let description: String
+    public let avatarURL: URL?
+    public let createdAt: Date
+    public let updatedAt: Date
+
+    public var isEmailVerified: Bool { emailVerifiedAt != nil }
+}
+
+/// `Session` — `GET /api/v1/auth/sessions`.
+public struct AccountSession: Codable, Hashable, Identifiable, Sendable {
+    public let sessionID: String
+    public let issuedAt: Date
+    public let lastUsedAt: Date
+    public let deviceInfo: String?
+    public let isCurrent: Bool
+
+    public var id: String { sessionID }
+}
+
+/// `POST /api/v1/account` body — only sent fields change; a password change
+/// carries the current password and revokes every other session.
+public struct AccountUpdate: Codable, Hashable, Sendable {
+    public struct PasswordChange: Codable, Hashable, Sendable {
+        public let current: String
+        public let next: String
+        public init(current: String, next: String) {
+            self.current = current
+            self.next = next
+        }
+    }
+
+    public var displayName: String?
+    public var description: String?
+    public var email: String?
+    public var password: PasswordChange?
+
+    public init(displayName: String? = nil, description: String? = nil, email: String? = nil, password: PasswordChange? = nil) {
+        self.displayName = displayName
+        self.description = description
+        self.email = email
+        self.password = password
+    }
+}
+
+/// `POST /api/v1/account/delete` response.
+public struct AccountDeleted: Codable, Hashable, Sendable {
+    public let did: String
+    public let deleted: Bool
+    public let deletedAt: Date
 }
 
 // MARK: - Errors (spec §2.3)

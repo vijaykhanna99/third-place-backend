@@ -23,6 +23,8 @@ export interface GenreRef {
 export interface StreamView {
   /** Camera-angle display name, e.g. "Main", "Side", "Overhead". */
   name: string;
+  /** The upload backing this angle — what an operator passes back to keep it on update. */
+  uploadID: string;
   streamURL: string;
 }
 
@@ -203,7 +205,7 @@ export class CatalogService {
     const streamsByEpisode = new Map<string, StreamView[]>();
     for (const r of streamRows) {
       const list = streamsByEpisode.get(r.episodeId) ?? [];
-      list.push({ name: r.name, streamURL: this.streamUrlFor(r.uploadId) });
+      list.push({ name: r.name, uploadID: r.uploadId, streamURL: this.streamUrlFor(r.uploadId) });
       streamsByEpisode.set(r.episodeId, list);
     }
 
