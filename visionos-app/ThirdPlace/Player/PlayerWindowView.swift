@@ -109,9 +109,15 @@ struct ImmersivePlayerView: UIViewControllerRepresentable {
         let controller = AVPlayerViewController()
         controller.player = player
         controller.allowsPictureInPicturePlayback = false
-        controller.experienceController.allowedExperiences = .recommended([.embedded, .expanded, .immersive])
+        // Every experience the system recommends for this content; the
+        // immersive one exists from visionOS 26, expanded is the fallback.
+        controller.experienceController.allowedExperiences = .recommended(excluding: [])
         Task { @MainActor in
-            await controller.experienceController.transition(to: .immersive)
+            if #available(visionOS 26.0, *) {
+                await controller.experienceController.transition(to: .immersive)
+            } else {
+                await controller.experienceController.transition(to: .expanded)
+            }
         }
         return controller
     }
