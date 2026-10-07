@@ -1,6 +1,7 @@
 import AVFoundation
 import CoreGraphics
 import CoreMedia
+import CoreText
 import CoreVideo
 import Foundation
 import VideoToolbox
@@ -127,11 +128,12 @@ final class FrameRenderer {
 
     private func draw(text: String, size: CGFloat, at center: CGPoint, in ctx: CGContext, weight: CGFloat) {
         let font = CTFontCreateWithName(weight > 0.5 ? "Helvetica-Bold" as CFString : "Helvetica" as CFString, size, nil)
-        let attrs: [NSAttributedString.Key: Any] = [
-            .font: font,
-            .foregroundColor: CGColor(gray: 1, alpha: 0.95),
+        let attrs: [CFString: Any] = [
+            kCTFontAttributeName: font,
+            kCTForegroundColorAttributeName: CGColor(gray: 1, alpha: 0.95),
         ]
-        let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: attrs))
+        let attributed = CFAttributedStringCreate(nil, text as CFString, attrs as CFDictionary)!
+        let line = CTLineCreateWithAttributedString(attributed)
         let bounds = CTLineGetBoundsWithOptions(line, [])
         ctx.saveGState()
         ctx.textPosition = CGPoint(x: center.x - bounds.width / 2, y: center.y - bounds.height / 2)
