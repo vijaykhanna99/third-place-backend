@@ -126,8 +126,8 @@ jobs:
           swift --version
       - name: API package diagnostics (plain compiler output)
         run: >-
-          ../../../scripts/ci-run.sh "swiftc typecheck" bash -o pipefail -c
-          'xcrun swiftc -typecheck -swift-version 5 -parse-as-library Sources/ThirdPlaceAPI/*.swift 2>&1 | grep -vE "^\s*$" | head -150'
+          ../../../scripts/ci-run.sh "swiftc typecheck" bash -c
+          'xcrun swiftc -typecheck -swift-version 5 -parse-as-library Sources/ThirdPlaceAPI/*.swift'
         working-directory: visionos-app/Packages/ThirdPlaceAPI
       - name: API package builds (macOS)
         run: ../../../scripts/ci-run.sh "swift build" swift build --build-tests
@@ -147,11 +147,11 @@ jobs:
           xcrun simctl list runtimes | grep -i visionos || sudo xcodebuild -downloadPlatform visionOS
       - name: Build the app for the visionOS simulator
         run: >-
-          ../scripts/ci-run.sh "xcodebuild" bash -o pipefail -c
-          'xcodebuild build -project ThirdPlace.xcodeproj -scheme ThirdPlace -configuration Debug
+          ../scripts/ci-run.sh "xcodebuild" ../scripts/ci-filter.sh
+          "error:|warning: .*(deprecated|unused)|BUILD|Compiling|Linking|note: Using|xcodebuild: "
+          xcodebuild build -project ThirdPlace.xcodeproj -scheme ThirdPlace -configuration Debug
           -destination "generic/platform=visionOS Simulator"
-          CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO -skipPackagePluginValidation 2>&1
-          | grep -E "error:|warning: .*(deprecated|unused)|BUILD|Compiling|Linking|note: Using" | grep -vE "^\s*$"'
+          CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO -skipPackagePluginValidation
 
         working-directory: visionos-app
 
