@@ -59,7 +59,7 @@ final class ModelsDecodingTests: XCTestCase {
     }
 
     func testFractionalSecondsFromTheRealServer() throws {
-        let json = #"{"name":"Main","streamURL":"https://m.example/uploads/x/index.m3u8?token=t"}"#
+        let json = #"{"name":"Main","uploadID":"01890a5d-ac96-774b-b111-000000000801","streamURL":"https://m.example/uploads/x/index.m3u8?token=t"}"#
         XCTAssertNoThrow(try decoder.decode(StreamAngle.self, from: Data(json.utf8)))
         let dated = #"{"episodeID":"01890a5d-ac96-774b-b111-000000000301","streams":[],"expiresAt":"2026-08-06T04:35:00.123Z"}"#
         let decoded = try decoder.decode(StreamsResponse.self, from: Data(dated.utf8))
