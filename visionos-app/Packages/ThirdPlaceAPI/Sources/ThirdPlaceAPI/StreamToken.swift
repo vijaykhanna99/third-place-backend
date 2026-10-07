@@ -21,10 +21,10 @@ public enum StreamURLs {
     /// Two URLs point at the same object when only their tokens differ.
     public static func sameObject(_ a: URL, _ b: URL) -> Bool {
         func strip(_ url: URL) -> String {
-            var c = URLComponents(url: url, resolvingAgainstBaseURL: false)
-            c?.queryItems = c?.queryItems?.filter { $0.name != "token" }
-            if c?.queryItems?.isEmpty == true { c?.queryItems = nil }
-            return c?.string ?? url.absoluteString
+            guard var c = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return url.absoluteString }
+            let kept = (c.queryItems ?? []).filter { $0.name != "token" }
+            c.queryItems = kept.isEmpty ? nil : kept
+            return c.string ?? url.absoluteString
         }
         return strip(a) == strip(b)
     }
