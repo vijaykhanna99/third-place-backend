@@ -112,6 +112,8 @@ src/
   db/               Drizzle schema + migrations (step 3)
   jobs/             BullMQ worker: ZIP extraction + janitor sweep (see jobs/README.md)
   cli/              Operator tooling, e.g. operator:create (step 4)
+tools/mvhevc/       macOS tool rendering MV-HEVC stereo HLS test bundles (for watching a real stream locally)
+scripts/            CI helpers, the HTTP end-to-end test, the local watch setup
 edge-worker/        Cloudflare Worker: stream-token validation, playlist token propagation, R2 origin (own package, see its README)
 visionos-app/       SwiftUI visionOS client: API package + catalog/player app (built and unit-tested in CI on a macOS runner)
 deploy/             Production compose stack, Caddyfile, env checklist, Cloudflare notes, runbook (step 10)
@@ -135,4 +137,5 @@ test/               Vitest suites (unit + integration against the Docker service
 | 8 | Metrics endpoint, janitor job, rate limiting, hardening pass (helmet, body limits, readiness probe) | ✅ done |
 | 9 | visionOS app: API client from the contract, browse/search/program/episode screens, immersive MV-HEVC player with angle switcher | ✅ done — builds with Xcode 26.3 and its unit tests run on a Vision Pro simulator in CI |
 | 10 | Deployment preparation: compose stack, Caddy, env checklist, Cloudflare/Worker notes, runbook (`deploy/`) | prepared, nothing deployed |
+| 12 | Watch setup: `tools/mvhevc` MV-HEVC test-clip generator, `scripts/watch-setup.sh` (services, clips, upload pipeline, program, app config), CI pushes a generated bundle through the pipeline | ✅ done — see `visionos-app/README.md` → "Watch a real stream" |
 | 11 | Cloud verification: CI runs the HTTP end-to-end smoke test (`pnpm e2e`) against built API + worker processes, the Worker suite, the image build, and builds the visionOS app with Xcode on a macOS runner; failures surface as check-run annotations | ✅ done |

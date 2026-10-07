@@ -176,6 +176,26 @@ jobs:
           xcodebuild build -project ThirdPlace.xcodeproj -scheme ThirdPlace -configuration Debug
           -destination "generic/platform=visionOS Simulator"
           CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO -skipPackagePluginValidation
+      - name: Build the MV-HEVC bundle generator
+        working-directory: tools/mvhevc
+        run: ../../scripts/ci-run.sh "make-bundle build" swift build -c release
+      - name: Render two short MV-HEVC stereo bundles (real VideoToolbox encode)
+        working-directory: tools/mvhevc
+        run: |
+          ../../scripts/ci-run.sh "make-bundle main" .build/release/make-bundle --out /tmp/bundles/main --label MAIN --hue 0.60 --seconds 6 --width 1280 --height 720
+          ../../scripts/ci-run.sh "make-bundle side" .build/release/make-bundle --out /tmp/bundles/side --label SIDE --hue 0.08 --seconds 6 --width 1280 --height 720
+          (cd /tmp/bundles/main && zip -qr ../main.zip .)
+          (cd /tmp/bundles/side && zip -qr ../side.zip .)
+          ls -la /tmp/bundles /tmp/bundles/main /tmp/bundles/main/hd
+          echo "::notice title=mvhevc bundle::$(cat /tmp/bundles/main/index.m3u8 | tr '\n' ' ')"
+          echo "::notice title=mvhevc media playlist::$(head -12 /tmp/bundles/main/hd/playlist.m3u8 | tr '\n' ' ')"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mvhevc-bundles
+          path: |
+            /tmp/bundles/main.zip
+            /tmp/bundles/side.zip
+          retention-days: 7
       - name: Run the app's unit tests on the simulator
         working-directory: visionos-app
         run: >-
@@ -184,6 +204,58 @@ jobs:
           xcodebuild test -project ThirdPlace.xcodeproj -scheme ThirdPlace -configuration Debug
           -destination "platform=visionOS Simulator,id=$(cat .sim-udid)"
           CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO -skipPackagePluginValidation
+
+  media:
+    name: Real MV-HEVC bundle through the pipeline
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    needs: [apple, checks]
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: tplace
+          POSTGRES_PASSWORD: tplace
+          POSTGRES_DB: tplace
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U tplace -d tplace"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: scripts/ci-run.sh "pnpm install" pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@v4
+        with:
+          name: mvhevc-bundles
+          path: /tmp/bundles
+      - run: ls -la /tmp/bundles
+      - name: Start MinIO
+        run: scripts/ci-run.sh "start minio" scripts/ci-minio.sh
+      - run: scripts/ci-run.sh "migrate" pnpm db:migrate
+        env:
+          DATABASE_URL: ${{ env.TEST_DATABASE_URL }}
+      - run: scripts/ci-run.sh "build" pnpm build
+      - name: End-to-end with the generated MV-HEVC bundles
+        run: scripts/ci-run.sh "media e2e" pnpm e2e
+        env:
+          E2E_BUNDLE_DIR: /tmp/bundles
+          DATABASE_URL: ${{ env.TEST_DATABASE_URL }}
+          REDIS_URL: ${{ env.TEST_REDIS_URL }}
+          R2_ENDPOINT: ${{ env.TEST_S3_ENDPOINT }}
+          R2_ACCESS_KEY_ID: tplace
+          R2_SECRET_ACCESS_KEY: tplace-secret
+          R2_BUCKET_MEDIA: tplace-media-dev
 
   image:
     name: Container image builds

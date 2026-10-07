@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { spawn, type ChildProcess } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
 import postgres from "postgres";
@@ -98,7 +99,14 @@ uhd8k/playlist.m3u8
 `;
 const MEDIA = "#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:6.0,\nsegment-00001.ts\n#EXTINF:6.0,\nsegment-00002.ts\n#EXT-X-ENDLIST\n";
 const SUBS = "#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:6.0,\nseg-00001.vtt\n#EXT-X-ENDLIST\n";
-const bundle = (tag: string) =>
+/**
+ * E2E_BUNDLE_DIR: a directory holding main.zip and side.zip (real MV-HEVC
+ * bundles from tools/mvhevc) to push through the pipeline instead of the
+ * synthetic archives below. CI generates them on a macOS runner.
+ */
+const BUNDLE_DIR = process.env.E2E_BUNDLE_DIR;
+const bundle = (tag: string): Buffer => (BUNDLE_DIR ? readFileSync(`${BUNDLE_DIR}/${tag}.zip`) : syntheticBundle(tag));
+const syntheticBundle = (tag: string) =>
   makeZip([
     { path: "index.m3u8", content: MASTER },
     { path: "uhd8k/playlist.m3u8", content: MEDIA },
@@ -189,7 +197,7 @@ async function main(): Promise<void> {
 
       let status = "";
       let error: string | null = null;
-      for (let i = 0; i < 120 && status !== "ready" && status !== "failed"; i++) {
+      for (let i = 0; i < 600 && status !== "ready" && status !== "failed"; i++) {
         await sleep(500);
         const res = await json<{ status: string; error: string | null; durationSec: number | null }>(
           await fetch(`${API}/api/v1/uploads/${initBody.uploadID}`, { headers: authed }),
@@ -237,7 +245,11 @@ async function main(): Promise<void> {
     const program = await json<{ id: string; season: { episodes: { id: string; durationSec: number }[] }[] }>(created);
     expectContract("POST", "/api/v1/programs", 200, program);
     const episode = program.season[0]!.episodes[0]!;
-    check(episode.durationSec === 12, "episode duration comes from the extracted upload");
+    if (BUNDLE_DIR) {
+      check(episode.durationSec > 0, `episode duration comes from the extracted upload (${String(episode.durationSec)} s)`);
+    } else {
+      check(episode.durationSec === 12, "episode duration comes from the extracted upload");
+    }
 
     // 6. Public reads.
     const withKey = { "x-app-key": APP_KEY };

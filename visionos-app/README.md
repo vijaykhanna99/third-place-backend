@@ -60,6 +60,37 @@ building, error-envelope mapping, telemetry POST). The app target's tests
 (`ThirdPlaceTests/`) run on the simulator: `xcodebuild test -scheme ThirdPlace -destination
 'platform=visionOS Simulator,name=Apple Vision Pro'`.
 
+## Watch a real stream (Mac, Apple silicon)
+
+One command stands up the backend, renders two MV-HEVC stereo test clips (two camera
+angles), pushes them through the real upload pipeline and points the app at this machine:
+
+```bash
+scripts/watch-setup.sh            # simulator on this Mac
+scripts/watch-setup.sh --device   # Apple Vision Pro on the same Wi-Fi (uses the Mac's LAN IP)
+```
+
+Options: `--ttl 120` (stream-token TTL in seconds, default 180) and `--seconds 300` (clip
+length, default 240). The script leaves the API and worker running (`scripts/watch-stop.sh`
+stops them) and prints the episode. Then open `ThirdPlace.xcodeproj`, run the `ThirdPlace`
+scheme, and go Browse → Test footage → Watch test → Stereo test pattern → Play.
+
+What to check:
+
+| Check | Expect |
+|---|---|
+| Stereo | On a Vision Pro the orange marker floats clearly in front of the screen; the `L`/`R` corner letters each belong to one eye (close one eye). The simulator shows a flat 2D image, which is expected. |
+| Angle switch | The bottom ornament lists `Main` and `Side`. Switching changes the label (MAIN ↔ SIDE) and colour; the clock keeps running from the same position. |
+| Token refresh | With the default TTL of 180 s the player fetches new URLs after about 120 s and swaps the item at the same position. Watch the clock around 2:00: a short pause or a repeated second is the swap. Decide whether that is acceptable or raise `STREAM_TOKEN_TTL_SEC` (and set `--ttl` here to try other values). |
+| Telemetry | `curl -s -H 'X-App-Key: dev-app-key' http://127.0.0.1:3000/api/v1/programs/<id> | jq .viewCount` increments per play. |
+
+The test clips come from `tools/mvhevc` (`make-bundle`), a macOS command-line tool that
+renders a synthetic scene and encodes it as MV-HEVC with VideoToolbox, writing fMP4
+segments and playlists in the bundle layout the pipeline expects. CI builds the same tool
+on a macOS runner, renders two short bundles and pushes them through the real pipeline, so
+the generator is proven before you run it. Locally the bucket is served straight by MinIO
+(public read, no edge Worker), so URLs are unsigned; the refresh behaviour is identical.
+
 ## How playback works
 
 - `EpisodeDetailView` → **Play** opens the player window with the episode id. The player

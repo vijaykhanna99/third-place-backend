@@ -4,3 +4,6 @@
 API_BASE_URL = http:/$()/127.0.0.1:3000
 APP_KEY = dev-app-key
 MEDIA_ORIGIN = http:/$()/127.0.0.1:9000/tplace-media-dev/media
+
+// scripts/watch-setup.sh writes Local.xcconfig (ignored by git) to point a device at this Mac.
+#include? "Local.xcconfig"

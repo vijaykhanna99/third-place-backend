@@ -61,7 +61,8 @@ services:
       /bin/sh -c "
       mc alias set local http://minio:9000 tplace tplace-secret &&
       mc mb --ignore-existing local/tplace-media-dev &&
-      echo 'bucket ready'"
+      mc anonymous set download local/tplace-media-dev &&
+      echo 'bucket ready (anonymous read enabled for local playback)'"
 
 volumes:
   tplace-pgdata:
