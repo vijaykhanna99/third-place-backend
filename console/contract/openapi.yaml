@@ -1,0 +1,1733 @@
+openapi: 3.1.0
+
+info:
+  title: Third Place Backend API
+  version: 1.0.0
+  description: |
+    API contract for the Third Place immersive video platform backend.
+    **This file is the single source of truth for the v1 API surface** (spec §0 item 10).
+    The finalized written spec is `third-place-app-backend-server-specification-v1-FINAL.md`.
+
+    ## Conventions (spec §2)
+    - Base path `/api/v1`. Reads are GET, writes are POST (no PATCH/DELETE — AT-Proto-compatible shape).
+    - Cursor pagination: `limit` + opaque `cursor`; first request omits `cursor`; responses return `nextCursor: null` when exhausted.
+    - Timestamps are ISO 8601 UTC. IDs are UUIDs (v7). Seasons are addressed by `seasonNumber`, unique within a program.
+    - `did` is an opaque stable account identifier. v1 format: `did:tplace:{uuid}` (AT-Proto-compatible field naming).
+    - Every error response has the shape `{ "error": { "code", "message" } }`. Codes are snake_case
+      (`validation_failed`, `unauthenticated`, `invalid_token`, `forbidden`, `app_key_required`,
+      `registration_closed`, `not_found`, `handle_taken`, `upload_not_ready`, `upload_already_attached`,
+      `checksum_mismatch`, `rate_limited`, `service_unavailable`, `internal_error`).
+    - `viewer.*` fields always return `false` in v1 (no end-user accounts).
+    - `quality` enum: `uhd8k` | `uhd4k` | `hd` (device-facing labels are the client's concern).
+    - **Multi-angle:** an episode carries 1..n named camera-angle `streams` (one upload per
+      angle, index 0 = default). Media storage is keyed per upload: `/uploads/{uploadID}/…`.
+    - **Global responses, not repeated per operation:** any operation may return
+      `500 internal_error` (opaque; details never leak), and any operation may return
+      `429 rate_limited` under the global per-IP limits (spec §2.4). Per-operation `429`s
+      are documented only where a stricter dedicated limit applies (login, register).
+      Public reads (catalog, search, stream, metrics) are limited to 60 requests per
+      minute per client IP, burstable; every response carries `RateLimit-Limit` and
+      `RateLimit-Remaining`, and a `429` carries `Retry-After` (seconds).
+    - **Gate order:** authentication and the app-key check run BEFORE request validation.
+      An unauthenticated call to a protected endpoint returns `401`/`403` even when the
+      request itself is malformed — request shape is never disclosed to unauthorized callers.
+
+    ## Auth model (v1)
+    - **Operator endpoints** (CMS, uploads): `Authorization: Bearer {accessToken}`.
+    - **Public reads** (catalog, search, stream, metrics): `X-App-Key` header.
+    - **Media requests to the CDN** (playlists/fragments): short-lived signed token in the URL
+      (`?token=`), validated by the edge Worker (`edge-worker/`) — out of scope for this API
+      contract beyond the `streamURL` fields; see spec §5 and `edge-worker/README.md`.
+    - Registration is deployed but externally closed in v1 → `403 registration_closed`.
+
+  contact:
+    name: Vijay Kumar (CTO, backend)
+    email: info@3rd-place.co.jp
+  license:
+    name: Proprietary — T-Place Inc.
+    url: https://3rd-place.co.jp
+
+servers:
+  - url: http://127.0.0.1:3000
+    description: Local development server
+  - url: http://127.0.0.1:4010
+    description: Local mock server (`pnpm mock`)
+
+tags:
+  - name: health
+    description: Liveness probes (no auth).
+  - name: auth
+    description: Sessions and tokens. Operator-only wiring in v1.
+  - name: account
+    description: The authenticated account's own profile.
+  - name: catalog
+    description: Public program/genre/search reads (X-App-Key).
+  - name: media
+    description: Stream-URL issuance for playback (X-App-Key).
+  - name: cms
+    description: Operator-only content management.
+  - name: uploads
+    description: Operator-only video/image ingestion.
+  - name: metrics
+    description: Anonymous playback telemetry (X-App-Key).
+
+security: []
+
+paths:
+  /healthz:
+    get:
+      operationId: getHealth
+      tags: [health]
+      summary: Liveness check (no auth, no app key)
+      description: |
+        Always `200` while the process is alive; a dependency outage shows as
+        `status: degraded` but never fails the probe (a restart would not fix it).
+        Components without a configured URL report `skipped`.
+      responses:
+        "200":
+          description: Service is live.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HealthChecks" }
+              example:
+                status: ok
+                checks: { db: ok, redis: ok }
+
+  /readyz:
+    get:
+      operationId: getReadiness
+      tags: [health]
+      summary: Readiness check (no auth, no app key)
+      description: |
+        `200` only when every configured dependency (database, Redis) answers; `503`
+        otherwise, so the load balancer stops routing to this instance until they return.
+      responses:
+        "200":
+          description: Ready to serve.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReadinessChecks" }
+              example:
+                status: ready
+                checks: { db: ok, redis: ok }
+        "503":
+          description: A dependency is down; do not route traffic here.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReadinessChecks" }
+              example:
+                status: not_ready
+                checks: { db: down, redis: ok }
+
+  /api/v1/auth/register:
+    post:
+      operationId: register
+      tags: [auth]
+      summary: Register a viewer account
+      description: |
+        Open only when the deployment sets `REGISTRATION_OPEN=true`; otherwise answers
+        `403 registration_closed`. Creates a `user` account, signs it in, and emails a
+        verification link. Operator accounts are always issued via the server-side seed CLI.
+        Shares the public per-IP rate limit.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RegisterRequest" }
+      responses:
+        "200":
+          description: Account created and signed in.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RegisterResponse" }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "403":
+          description: Registration is closed on this deployment.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example:
+                error: { code: registration_closed, message: "Registration is not open" }
+        "409":
+          description: Handle already taken.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example:
+                error: { code: handle_taken, message: "Handle is already in use" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /api/v1/auth/login:
+    post:
+      operationId: login
+      tags: [auth]
+      summary: Log in with handle or email
+      description: |
+        Login failures return an identical error regardless of cause (no account-existence oracle).
+        Rate limits: 5 failures/account/15 min, 20/IP/15 min → temporary lockout (spec §2.4).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [identifier, password]
+              properties:
+                identifier:
+                  type: string
+                  description: Handle or email address.
+                password: { type: string }
+            example: { identifier: third-place-ops, password: "correct horse battery staple" }
+      responses:
+        "200":
+          description: Session created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TokenResponse" }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401":
+          description: Invalid credentials (uniform message).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example:
+                error: { code: unauthenticated, message: "Invalid credentials" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /api/v1/auth/refresh:
+    post:
+      operationId: refreshSession
+      tags: [auth]
+      summary: Rotate the refresh token and reissue an access token
+      description: |
+        The old refresh token is invalidated on success. Reuse of an already-consumed refresh
+        token invalidates the entire session chain (spec §4).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refreshToken]
+              properties:
+                refreshToken: { type: string }
+      responses:
+        "200":
+          description: New token pair.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TokenResponse" }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401":
+          description: Refresh token invalid, expired, or reused.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example:
+                error: { code: invalid_token, message: "Invalid or expired token" }
+
+  /api/v1/auth/logout:
+    post:
+      operationId: logout
+      tags: [auth]
+      summary: Invalidate one session's refresh token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refreshToken]
+              properties:
+                refreshToken: { type: string }
+      responses:
+        "200":
+          description: "Session revoked (idempotent — revoking an unknown token still returns `revoked: true`)."
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [revoked]
+                properties:
+                  revoked: { type: boolean }
+              example: { revoked: true }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+
+  /api/v1/auth/sessions:
+    get:
+      operationId: listSessions
+      tags: [auth]
+      summary: List the authenticated account's sessions
+      security: [{ BearerAuth: [] }]
+      responses:
+        "200":
+          description: Sessions, most recently used first.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [sessions]
+                properties:
+                  sessions:
+                    type: array
+                    items: { $ref: "#/components/schemas/Session" }
+              example:
+                sessions:
+                  - sessionID: 01890a5d-ac96-774b-b111-00000000c001
+                    issuedAt: "2026-08-06T03:10:00Z"
+                    lastUsedAt: "2026-08-06T04:02:11Z"
+                    deviceInfo: "cms-cli/0.1 (macOS 15)"
+                    isCurrent: true
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+
+  /api/v1/auth/sessions/{sessionID}/revoke:
+    post:
+      operationId: revokeSession
+      tags: [auth]
+      summary: Revoke one session by ID
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/SessionID"
+      responses:
+        "200":
+          description: Session revoked.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [revoked]
+                properties:
+                  revoked: { type: boolean }
+              example: { revoked: true }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/auth/email/verify-request:
+    post:
+      operationId: requestEmailVerification
+      tags: [auth]
+      summary: Email a verification link to the signed-in account
+      description: |
+        Issues a single-use token (24 h) and emails the verification link. A no-op for an
+        already verified address, and a no-op when the deployment has no email transport
+        configured (`MAIL_TRANSPORT`). Spec §4.7.
+      security: [{ BearerAuth: [] }]
+      responses:
+        "202":
+          description: Accepted.
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+
+  /api/v1/auth/email/verify:
+    post:
+      operationId: verifyEmail
+      tags: [auth]
+      summary: Verify email with a token from the emailed link
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: { type: string }
+      responses:
+        "200":
+          description: Email verified.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [verified]
+                properties:
+                  verified: { type: boolean }
+              example: { verified: true }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401":
+          description: Token invalid or expired.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example:
+                error: { code: invalid_token, message: "Invalid or expired token" }
+
+  /api/v1/auth/password/reset-request:
+    post:
+      operationId: requestPasswordReset
+      tags: [auth]
+      summary: Email a password-reset link
+      description: |
+        Issues a single-use token (30 min) and emails the reset link when the identifier names
+        an account. Always responds 202 regardless of whether the identifier exists (no account
+        oracle). Shares the public per-IP rate limit.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [identifier]
+              properties:
+                identifier: { type: string, description: Handle or email address. }
+      responses:
+        "202":
+          description: Accepted.
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+
+  /api/v1/auth/password/reset:
+    post:
+      operationId: resetPassword
+      tags: [auth]
+      summary: Reset password with a token from the emailed link
+      description: All sessions for the account are invalidated on success.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, password]
+              properties:
+                token: { type: string }
+                password: { type: string, minLength: 10 }
+      responses:
+        "200":
+          description: Password reset.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [reset]
+                properties:
+                  reset: { type: boolean }
+              example: { reset: true }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401":
+          description: Token invalid or expired.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example:
+                error: { code: invalid_token, message: "Invalid or expired token" }
+
+  /api/v1/account:
+    get:
+      operationId: getAccount
+      tags: [account]
+      summary: Get the authenticated account
+      security: [{ BearerAuth: [] }]
+      responses:
+        "200":
+          description: The account.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Account" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+    post:
+      operationId: updateAccount
+      tags: [account]
+      summary: Update the authenticated account (partial)
+      description: Send only fields to change. Password change requires `password.current` and `password.next`.
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                displayName: { type: [string, "null"], maxLength: 64 }
+                description: { type: [string, "null"], maxLength: 5000 }
+                avatarURL: { type: [string, "null"], format: uri }
+                email: { type: [string, "null"], format: email }
+                password:
+                  type: object
+                  required: [current, next]
+                  properties:
+                    current: { type: string }
+                    next: { type: string, minLength: 10 }
+            example: { displayName: "Third Place Ops" }
+      responses:
+        "200":
+          description: Updated account. A body with nothing to change returns the account unmodified.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Account" }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401":
+          description: Missing/invalid bearer token, or `password.current` is wrong.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example:
+                error: { code: unauthenticated, message: "Current password is incorrect" }
+        "409":
+          description: Requested email already belongs to another account.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example:
+                error: { code: email_taken, message: "Email is already in use" }
+
+  /api/v1/account/delete:
+    post:
+      operationId: deleteAccount
+      tags: [account]
+      summary: Delete the authenticated account (password re-entry required)
+      description: Invalidates all sessions.
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password]
+              properties:
+                password: { type: string }
+      responses:
+        "200":
+          description: Account deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [did, deleted, deletedAt]
+                properties:
+                  did: { type: string }
+                  deleted: { type: boolean }
+                  deletedAt: { type: string, format: date-time }
+              example:
+                did: did:tplace:01890a5d-ac96-774b-b111-00000000a001
+                deleted: true
+                deletedAt: "2026-08-06T04:20:00Z"
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+
+  /api/v1/programs/{programID}:
+    get:
+      operationId: getProgram
+      tags: [catalog]
+      summary: Get program details (with seasons and episodes)
+      security: [{ AppKey: [] }]
+      parameters:
+        - $ref: "#/components/parameters/ProgramID"
+        - name: seasonNumber
+          in: query
+          required: false
+          description: If given, return only that season; otherwise all seasons.
+          schema: { type: integer, minimum: 1 }
+      responses:
+        "200":
+          description: The program. `episodes[].streamURL` carries a fresh 15-minute stream token.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Program" }
+              examples:
+                program:
+                  $ref: "#/components/examples/ProgramFull"
+        "403": { $ref: "#/components/responses/AppKeyRequired" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/genres:
+    get:
+      operationId: listGenres
+      tags: [catalog]
+      summary: List all genres
+      security: [{ AppKey: [] }]
+      responses:
+        "200":
+          description: All genres (no pagination — the set is small).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [genres]
+                properties:
+                  genres:
+                    type: array
+                    items: { $ref: "#/components/schemas/Genre" }
+              example:
+                genres:
+                  - id: 01890a5d-ac96-774b-b111-000000000001
+                    name: Music
+                    description: Immersive live music experiences.
+                    thumbnailURL: https://media.3rd-place.example/thumbs/genre-music.jpg
+                    programCount: 1
+        "403": { $ref: "#/components/responses/AppKeyRequired" }
+
+  /api/v1/genres/{genreID}/programs:
+    get:
+      operationId: listProgramsByGenre
+      tags: [catalog]
+      summary: List programs in a genre
+      security: [{ AppKey: [] }]
+      parameters:
+        - $ref: "#/components/parameters/GenreID"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: Programs in the genre.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [genreID, total, nextCursor, programs]
+                properties:
+                  genreID: { type: string, format: uuid }
+                  total: { type: integer }
+                  nextCursor: { type: [string, "null"] }
+                  programs:
+                    type: array
+                    items: { $ref: "#/components/schemas/ProgramSummary" }
+              example:
+                genreID: 01890a5d-ac96-774b-b111-000000000001
+                total: 1
+                nextCursor: null
+                programs:
+                  - id: 01890a5d-ac96-774b-b111-000000000101
+                    title: Neon Nights — Immersive Live
+                    description: An immersive concert series captured in 8K stereoscopic MV-HEVC.
+                    thumbnailURL: https://media.3rd-place.example/thumbs/neon-nights.jpg
+                    genre: [{ id: 01890a5d-ac96-774b-b111-000000000001, name: Music }]
+                    updatedAt: "2026-08-01T10:00:00Z"
+        "403": { $ref: "#/components/responses/AppKeyRequired" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/programs/{programID}/episodes/search:
+    get:
+      operationId: searchEpisodes
+      tags: [catalog]
+      summary: Search episodes within a program
+      security: [{ AppKey: [] }]
+      parameters:
+        - $ref: "#/components/parameters/ProgramID"
+        - $ref: "#/components/parameters/Query"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: Matching episodes.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [query, programID, total, nextCursor, episodes]
+                properties:
+                  query: { type: string }
+                  programID: { type: string, format: uuid }
+                  total: { type: integer }
+                  nextCursor: { type: [string, "null"] }
+                  episodes:
+                    type: array
+                    items: { $ref: "#/components/schemas/EpisodeSummary" }
+              example:
+                query: tokyo
+                programID: 01890a5d-ac96-774b-b111-000000000101
+                total: 1
+                nextCursor: null
+                episodes:
+                  - id: 01890a5d-ac96-774b-b111-000000000301
+                    seasonNumber: 1
+                    number: 1
+                    title: Opening Night — Tokyo
+                    description: The first night of the tour, captured from the front row.
+                    durationSec: 5400
+                    thumbnailURL: https://media.3rd-place.example/thumbs/ep-s01e01.jpg
+                    publishedAt: "2026-07-01T12:00:00Z"
+        "403": { $ref: "#/components/responses/AppKeyRequired" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/search:
+    get:
+      operationId: search
+      tags: [catalog]
+      summary: Search programs and episodes
+      description: |
+        Program match → the program with its episodes, `matchedBy: program`.
+        Episode-only match → the containing program with **only** matching episodes, `matchedBy: episode`.
+
+        Episodes per program are capped at 20 in this response; use program detail or
+        episode search for the complete list. Results are ordered newest-created first
+        and paginated on an immutable key, so a sweep never skips or repeats a program.
+      security: [{ AppKey: [] }]
+      parameters:
+        - $ref: "#/components/parameters/Query"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: Search results grouped by program.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [query, total, nextCursor, programs]
+                properties:
+                  query: { type: string }
+                  total: { type: integer }
+                  nextCursor: { type: [string, "null"] }
+                  programs:
+                    type: array
+                    items: { $ref: "#/components/schemas/SearchProgramResult" }
+              example:
+                query: tokyo
+                total: 1
+                nextCursor: null
+                programs:
+                  - id: 01890a5d-ac96-774b-b111-000000000101
+                    title: Neon Nights — Immersive Live
+                    description: An immersive concert series captured in 8K stereoscopic MV-HEVC.
+                    thumbnailURL: https://media.3rd-place.example/thumbs/neon-nights.jpg
+                    genre: [{ id: 01890a5d-ac96-774b-b111-000000000001, name: Music }]
+                    matchedBy: episode
+                    episodes:
+                      - id: 01890a5d-ac96-774b-b111-000000000301
+                        seasonNumber: 1
+                        number: 1
+                        title: Opening Night — Tokyo
+                        description: The first night of the tour, captured from the front row.
+                        durationSec: 5400
+                        thumbnailURL: https://media.3rd-place.example/thumbs/ep-s01e01.jpg
+                        publishedAt: "2026-07-01T12:00:00Z"
+                      - id: 01890a5d-ac96-774b-b111-000000000302
+                        seasonNumber: 1
+                        number: 2
+                        title: Second Night — Tokyo
+                        description: Deeper cuts and an acoustic interlude.
+                        durationSec: 5820
+                        thumbnailURL: https://media.3rd-place.example/thumbs/ep-s01e02.jpg
+                        publishedAt: "2026-07-08T12:00:00Z"
+        "403": { $ref: "#/components/responses/AppKeyRequired" }
+
+  /api/v1/episodes/{episodeID}/stream:
+    get:
+      operationId: getStreamURL
+      tags: [media]
+      summary: Get a fresh stream URL for an episode
+      description: |
+        Returns every camera angle's CDN master-playlist URL, each carrying a fresh
+        15-minute prefix-scoped token (spec §5.3). Exists so clients can refresh
+        mid-playback without re-fetching the program.
+
+        Each `streamURL` is `{mediaOrigin}/uploads/{uploadID}/index.m3u8?token={token}`.
+        The token is scoped to that angle's `uploads/{uploadID}/` prefix and expires at
+        `expiresAt`; the edge Worker validates it on every media request and rewrites
+        playlist URIs so fragment fetches carry it automatically. Hand the URL to
+        AVPlayer as is. Before `expiresAt` passes, call this endpoint again and
+        replace the player item's URL — tokens are not refreshed by the CDN.
+
+        A logically deleted episode (or one whose program is deleted) answers `404`
+        immediately; already-issued tokens expire within the TTL.
+      security: [{ AppKey: [] }]
+      parameters:
+        - $ref: "#/components/parameters/EpisodeID"
+      responses:
+        "200":
+          description: All camera angles with fresh tokens (same order as program detail).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [episodeID, streams, expiresAt]
+                properties:
+                  episodeID: { type: string, format: uuid }
+                  streams:
+                    type: array
+                    minItems: 1
+                    items: { $ref: "#/components/schemas/Stream" }
+                  expiresAt: { type: string, format: date-time }
+              example:
+                episodeID: 01890a5d-ac96-774b-b111-000000000301
+                streams:
+                  - name: Main
+                    uploadID: 01890a5d-ac96-774b-b111-000000000801
+                    streamURL: https://media.3rd-place.example/uploads/01890a5d-ac96-774b-b111-000000000801/index.m3u8?token=v1.tok301m.fresh
+                  - name: Side
+                    uploadID: 01890a5d-ac96-774b-b111-000000000802
+                    streamURL: https://media.3rd-place.example/uploads/01890a5d-ac96-774b-b111-000000000802/index.m3u8?token=v1.tok301s.fresh
+                expiresAt: "2026-08-06T04:35:00Z"
+        "403": { $ref: "#/components/responses/AppKeyRequired" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/programs:
+    post:
+      operationId: createProgram
+      tags: [cms]
+      summary: Create a program with seasons and episodes (operator)
+      description: |
+        Each episode's `uploadID` must reference an upload with `status: ready` that is not yet
+        attached → otherwise `409 upload_not_ready` / `409 upload_already_attached`.
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateProgramRequest" }
+      responses:
+        "200":
+          description: The created program, in full detail shape.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Program" }
+              examples:
+                program:
+                  $ref: "#/components/examples/ProgramFull"
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: A referenced upload or genre does not exist.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example:
+                error: { code: not_found, message: "Upload ... not found" }
+        "409":
+          description: Upload not ready, or already attached to another episode.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example:
+                error: { code: upload_not_ready, message: "Upload is not in ready state" }
+
+  /api/v1/programs/{programID}/update:
+    post:
+      operationId: updateProgram
+      tags: [cms]
+      summary: Partially update a program and/or its episodes (operator)
+      description: |
+        Omitted/null fields are untouched. Episodes listed in `episodes[]` are partially updated
+        by `episodeID`. Supplying `uploadID` replaces the episode's video; the switch happens when
+        the new upload's validation completes.
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/ProgramID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateProgramRequest" }
+      responses:
+        "200":
+          description: The updated program, in full detail shape.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Program" }
+              examples:
+                program:
+                  $ref: "#/components/examples/ProgramFull"
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: Upload not ready or already attached.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example:
+                error: { code: upload_not_ready, message: "Upload is not in ready state" }
+
+  /api/v1/programs/{programID}/delete:
+    post:
+      operationId: deleteProgram
+      tags: [cms]
+      summary: Logically delete a program and all its episodes (operator)
+      description: |
+        The target is implied by the path — no request body (contract refinement over the
+        proposal's generic body). Media becomes inaccessible as tokens expire (≤15 min);
+        storage is retained 30 days for recovery, then physically deleted by the janitor.
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/ProgramID"
+      responses:
+        "200":
+          description: Deletion result.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DeleteResult" }
+              example:
+                targetType: program
+                programID: 01890a5d-ac96-774b-b111-000000000101
+                episodeID: null
+                deleted: true
+                deletedAt: "2026-08-06T04:40:00Z"
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/episodes/{episodeID}/delete:
+    post:
+      operationId: deleteEpisode
+      tags: [cms]
+      summary: Logically delete one episode (operator)
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/EpisodeID"
+      responses:
+        "200":
+          description: Deletion result.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DeleteResult" }
+              example:
+                targetType: episode
+                programID: 01890a5d-ac96-774b-b111-000000000101
+                episodeID: 01890a5d-ac96-774b-b111-000000000301
+                deleted: true
+                deletedAt: "2026-08-06T04:41:00Z"
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/uploads/images:
+    post:
+      operationId: uploadImage
+      tags: [uploads]
+      summary: Upload a thumbnail image (operator)
+      description: JPEG or PNG, ≤10 MB. Use the returned `url` as `thumbnailURL`. Small files stay multipart-through-API (spec §7.4).
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: JPEG or PNG image, max 10 MB.
+      responses:
+        "200":
+          description: Stored image.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [imageID, url, byteSize, width, height]
+                properties:
+                  imageID: { type: string, format: uuid }
+                  url: { type: string, format: uri }
+                  byteSize: { type: integer }
+                  width: { type: integer }
+                  height: { type: integer }
+              example:
+                imageID: 01890a5d-ac96-774b-b111-000000000901
+                url: https://media.3rd-place.example/thumbs/neon-nights.jpg
+                byteSize: 482113
+                width: 1920
+                height: 1080
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/uploads:
+    post:
+      operationId: initiateUpload
+      tags: [uploads]
+      summary: Initiate a video upload — returns a presigned storage URL (operator)
+      description: |
+        The API never proxies video bytes (spec §8.1). Upload the HLS ZIP directly to
+        `uploadURL` with an HTTP `PUT`, then call `complete`.
+
+        The presigned URL pins `Content-Length` to the declared `byteSize`, so the
+        PUT must send exactly that many bytes. `checksum` is the SHA-256 of the
+        archive; it is verified by the extraction worker while it streams the file.
+
+        `byteSize` is capped at 5 GiB (5368709120): the handshake issues a single
+        presigned `PUT`, and object storage accepts at most 5 GiB per `PutObject`.
+        Larger masters must be split into further angles or re-encoded.
+
+        One upload carries ONE camera angle's HLS bundle: a ZIP with `index.m3u8`
+        at its root, per-quality media playlists, fragments, and optional
+        `subtitles/{lang}/` tracks.
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [fileName, byteSize, checksum]
+              properties:
+                fileName: { type: string }
+                byteSize: { type: integer, minimum: 1, maximum: 5368709120 }
+                checksum:
+                  type: string
+                  description: SHA-256 of the ZIP, lowercase hex.
+                  pattern: "^[a-f0-9]{64}$"
+            example:
+              fileName: neon-nights-s01e01-hls.zip
+              byteSize: 4294967296
+              checksum: 9f2b5c1e8d4a7b3c6e9f2b5c1e8d4a7b3c6e9f2b5c1e8d4a7b3c6e9f2b5c1e8d
+      responses:
+        "200":
+          description: Presigned upload created.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [uploadID, uploadURL, expiresAt, status]
+                properties:
+                  uploadID: { type: string, format: uuid }
+                  uploadURL: { type: string, format: uri }
+                  expiresAt: { type: string, format: date-time }
+                  status: { type: string, enum: [uploading] }
+              example:
+                uploadID: 01890a5d-ac96-774b-b111-000000000801
+                uploadURL: https://tplace-media-dev.r2.example/tmp/01890a5d-ac96-774b-b111-000000000801?X-Amz-Signature=abc123
+                expiresAt: "2026-08-06T06:00:00Z"
+                status: uploading
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/uploads/{uploadID}/complete:
+    post:
+      operationId: completeUpload
+      tags: [uploads]
+      summary: Mark upload finished — verifies checksum and enqueues extraction (operator)
+      description: |
+        Verifies the object exists in storage and the checksum matches, then enqueues the
+        extraction/validation job (spec §8.2, §8.4). Poll status until `ready`/`failed`.
+        A failed upload is never re-extracted — start a new upload.
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/UploadID"
+      responses:
+        "200":
+          description: Queued for extraction.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Upload" }
+              example:
+                uploadID: 01890a5d-ac96-774b-b111-000000000801
+                status: queued
+                playlistURL: null
+                durationSec: null
+                error: null
+        "400":
+          description: No object was uploaded to the presigned URL.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example:
+                error: { code: validation_failed, message: "No uploaded object found for this upload" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: Stored object does not match the declared size — upload marked failed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example:
+                error: { code: checksum_mismatch, message: "Stored object does not match the declared size" }
+        "503":
+          description: |
+            Object storage or the extraction queue is unreachable. The upload is left
+            exactly as it was (`uploading`); call `complete` again once the dependency is back.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example:
+                error: { code: service_unavailable, message: "Object storage is unavailable; call complete again later" }
+
+  /api/v1/uploads/{uploadID}:
+    get:
+      operationId: getUpload
+      tags: [uploads]
+      summary: Get upload status (operator)
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/UploadID"
+      responses:
+        "200":
+          description: Current status. `playlistURL`/`durationSec` populate on `ready`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Upload" }
+              example:
+                uploadID: 01890a5d-ac96-774b-b111-000000000801
+                status: ready
+                playlistURL: https://media.3rd-place.example/uploads/01890a5d-ac96-774b-b111-000000000801/index.m3u8
+                durationSec: 5400
+                error: null
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/metrics/playback:
+    post:
+      operationId: recordPlaybackEvent
+      tags: [metrics]
+      summary: Record an anonymous playback event (fire-and-forget)
+      description: |
+        Always returns `202` — invalid payloads are dropped server-side, never surfaced to the
+        client (spec §9). `sessionUUID` is a client-generated anonymous per-playback ID; no user
+        identity exists in v1. Stored append-only for Phase-2 analytics.
+      security: [{ AppKey: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [episodeID, event, positionSec, sessionUUID]
+              properties:
+                episodeID: { type: string, format: uuid }
+                event: { type: string, enum: [start, progress, complete, error] }
+                positionSec: { type: number, minimum: 0 }
+                quality:
+                  oneOf:
+                    - { type: string, enum: [uhd8k, uhd4k, hd] }
+                    - { type: "null" }
+                sessionUUID: { type: string, format: uuid }
+            example:
+              episodeID: 01890a5d-ac96-774b-b111-000000000301
+              event: progress
+              positionSec: 421.5
+              quality: uhd8k
+              sessionUUID: 7d444840-9dc0-11d1-b245-5ffdce74fad2
+      responses:
+        "202":
+          description: Accepted (always, including for payloads dropped as invalid).
+        "403": { $ref: "#/components/responses/AppKeyRequired" }
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Operator access token (15-min JWT). Obtain via `/api/v1/auth/login`.
+    AppKey:
+      type: apiKey
+      in: header
+      name: X-App-Key
+      description: |
+        Static key embedded in the app; first-pass filter only (spec §5, Decision D5).
+        Applies to API and playlist requests — CDN fragment requests carry the signed
+        token only, since AVPlayer does not reliably attach custom headers.
+
+  parameters:
+    ProgramID:
+      name: programID
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    EpisodeID:
+      name: episodeID
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    GenreID:
+      name: genreID
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    UploadID:
+      name: uploadID
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    SessionID:
+      name: sessionID
+      in: path
+      required: true
+      description: Non-UUID values are rejected with 400 validation_failed.
+      schema: { type: string, format: uuid }
+    Limit:
+      name: limit
+      in: query
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      description: Opaque pagination cursor from a previous response. Omit on the first request.
+      schema: { type: string, maxLength: 512 }
+    Query:
+      name: query
+      in: query
+      required: true
+      schema: { type: string, minLength: 1, maxLength: 200 }
+
+  responses:
+    ValidationFailed:
+      description: Request validation failed.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example:
+            error: { code: validation_failed, message: "Request validation failed" }
+    Unauthenticated:
+      description: Missing or invalid bearer token.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example:
+            error: { code: unauthenticated, message: "Authentication required" }
+    Forbidden:
+      description: Authenticated but lacking the required role.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example:
+            error: { code: forbidden, message: "Operator role required" }
+    AppKeyRequired:
+      description: Missing or invalid `X-App-Key` header.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example:
+            error: { code: app_key_required, message: "Missing or invalid app key" }
+    NotFound:
+      description: Resource not found (includes logically deleted resources).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example:
+            error: { code: not_found, message: "Resource not found" }
+    RateLimited:
+      description: Rate limit exceeded (spec §2.4).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example:
+            error: { code: rate_limited, message: "Too many requests" }
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string }
+            message: { type: string }
+
+    HealthChecks:
+      type: object
+      required: [status, checks]
+      properties:
+        status: { type: string, enum: [ok, degraded] }
+        checks: { $ref: "#/components/schemas/DependencyChecks" }
+
+    ReadinessChecks:
+      type: object
+      required: [status, checks]
+      properties:
+        status: { type: string, enum: [ready, not_ready] }
+        checks: { $ref: "#/components/schemas/DependencyChecks" }
+
+    DependencyChecks:
+      type: object
+      required: [db, redis]
+      properties:
+        db: { type: string, enum: [ok, down, skipped] }
+        redis: { type: string, enum: [ok, down, skipped] }
+
+    RegisterRequest:
+      type: object
+      required: [handle, email, password, displayName]
+      properties:
+        handle:
+          type: string
+          minLength: 3
+          maxLength: 32
+          pattern: "^[a-z0-9-]+$"
+        email: { type: string, format: email }
+        password: { type: string, minLength: 10 }
+        displayName: { type: string, maxLength: 64 }
+      example:
+        handle: third-place-ops
+        email: ops@3rd-place.co.jp
+        password: "correct horse battery staple"
+        displayName: Third Place Ops
+
+    RegisterResponse:
+      type: object
+      required: [did, handle, email, displayName, avatarURL, createdAt, accessToken, refreshToken, expiresIn]
+      properties:
+        did: { type: string }
+        handle: { type: string }
+        email: { type: string, format: email }
+        displayName: { type: string }
+        avatarURL: { type: [string, "null"], format: uri }
+        createdAt: { type: string, format: date-time }
+        accessToken: { type: string }
+        refreshToken: { type: string }
+        expiresIn: { type: integer, description: Access-token validity in seconds. }
+      example:
+        did: did:tplace:01890a5d-ac96-774b-b111-00000000a001
+        handle: third-place-ops
+        email: ops@3rd-place.co.jp
+        displayName: Third Place Ops
+        avatarURL: null
+        createdAt: "2026-08-06T03:00:00Z"
+        accessToken: eyJhbGciOiJIUzI1NiIsImtpZCI6ImsxIn0.e30.sig
+        refreshToken: rft_9f2b5c1e8d4a7b3c6e9f2b5c1e8d4a7b
+        expiresIn: 900
+
+    TokenResponse:
+      type: object
+      required: [did, handle, accessToken, refreshToken, expiresIn]
+      properties:
+        did: { type: string }
+        handle: { type: string }
+        accessToken: { type: string }
+        refreshToken: { type: string }
+        expiresIn: { type: integer, description: Access-token validity in seconds. }
+      example:
+        did: did:tplace:01890a5d-ac96-774b-b111-00000000a001
+        handle: third-place-ops
+        accessToken: eyJhbGciOiJIUzI1NiIsImtpZCI6ImsxIn0.e30.sig
+        refreshToken: rft_9f2b5c1e8d4a7b3c6e9f2b5c1e8d4a7b
+        expiresIn: 900
+
+    Session:
+      type: object
+      required: [sessionID, issuedAt, lastUsedAt, deviceInfo, isCurrent]
+      properties:
+        sessionID: { type: string, format: uuid }
+        issuedAt: { type: string, format: date-time }
+        lastUsedAt: { type: string, format: date-time }
+        deviceInfo: { type: [string, "null"] }
+        isCurrent: { type: boolean }
+
+    Account:
+      type: object
+      required: [did, handle, email, emailVerifiedAt, displayName, description, avatarURL, createdAt, updatedAt]
+      properties:
+        did: { type: string }
+        handle: { type: string }
+        email: { type: string, format: email }
+        emailVerifiedAt:
+          type: [string, "null"]
+          format: date-time
+          description: When the address was confirmed through the emailed link; null until then.
+        displayName: { type: string }
+        description: { type: string }
+        avatarURL: { type: [string, "null"], format: uri }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+      example:
+        did: did:tplace:01890a5d-ac96-774b-b111-00000000a001
+        handle: third-place-ops
+        email: ops@3rd-place.co.jp
+        emailVerifiedAt: "2026-08-06T03:05:00Z"
+        displayName: Third Place Ops
+        description: Operator account for the Third Place catalog.
+        avatarURL: null
+        createdAt: "2026-08-06T03:00:00Z"
+        updatedAt: "2026-08-06T03:00:00Z"
+
+    GenreRef:
+      type: object
+      required: [id, name]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+
+    Genre:
+      type: object
+      required: [id, name, description, thumbnailURL, programCount]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        description: { type: string }
+        thumbnailURL: { type: [string, "null"], format: uri }
+        programCount: { type: integer }
+
+    Owner:
+      type: object
+      required: [did, handle, displayName, avatarURL]
+      properties:
+        did: { type: string }
+        handle: { type: string }
+        displayName: { type: string }
+        avatarURL: { type: [string, "null"], format: uri }
+
+    Viewer:
+      type: object
+      description: Per-viewer relationship flags. Always `false` in v1 (no end-user accounts).
+      required: [isFollowing, isFavorited]
+      properties:
+        isFollowing: { type: boolean }
+        isFavorited: { type: boolean }
+
+    Stream:
+      type: object
+      description: One camera angle. `streamURL` carries a fresh 15-minute token.
+      required: [name, uploadID, streamURL]
+      properties:
+        name:
+          type: string
+          description: Angle display name, e.g. "Main", "Side", "Overhead".
+        uploadID:
+          type: string
+          format: uuid
+          description: The upload backing this angle. Operators pass it back in `streams[]` on update to keep the angle.
+        streamURL: { type: string, format: uri }
+
+    Episode:
+      type: object
+      description: |
+        Episode inside program details. `streams` holds 1..n camera angles in
+        presentation order; index 0 is the default angle. At least one entry is
+        always present.
+      required: [id, number, title, description, durationSec, thumbnailURL, streams, publishedAt]
+      properties:
+        id: { type: string, format: uuid }
+        number: { type: integer }
+        title: { type: string }
+        description: { type: string }
+        durationSec: { type: integer }
+        thumbnailURL: { type: [string, "null"], format: uri }
+        streams:
+          type: array
+          minItems: 1
+          items: { $ref: "#/components/schemas/Stream" }
+        publishedAt: { type: string, format: date-time }
+
+    EpisodeSummary:
+      type: object
+      description: Episode in search results (no streamURL — fetch via program details or /stream).
+      required: [id, seasonNumber, number, title, description, durationSec, thumbnailURL, publishedAt]
+      properties:
+        id: { type: string, format: uuid }
+        seasonNumber: { type: integer }
+        number: { type: integer }
+        title: { type: string }
+        description: { type: string }
+        durationSec: { type: integer }
+        thumbnailURL: { type: [string, "null"], format: uri }
+        publishedAt: { type: string, format: date-time }
+
+    Season:
+      type: object
+      required: [id, number, title, description, episodes]
+      properties:
+        id: { type: string, format: uuid }
+        number: { type: integer }
+        title: { type: string }
+        description: { type: string }
+        episodes:
+          type: array
+          items: { $ref: "#/components/schemas/Episode" }
+
+    Program:
+      type: object
+      required: [id, title, description, thumbnailURL, genre, createdAt, updatedAt, viewCount, owner, viewer, season]
+      properties:
+        id: { type: string, format: uuid }
+        title: { type: string }
+        description: { type: string }
+        thumbnailURL: { type: string, format: uri }
+        genre:
+          type: array
+          items: { $ref: "#/components/schemas/GenreRef" }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        viewCount:
+          type: integer
+          description: |
+            Approximate playback-start count across the program's episodes,
+            from anonymous client-reported telemetry. Display-grade only;
+            reads 0 until clients ship playback events.
+        owner: { $ref: "#/components/schemas/Owner" }
+        viewer: { $ref: "#/components/schemas/Viewer" }
+        season:
+          type: array
+          items: { $ref: "#/components/schemas/Season" }
+
+    ProgramSummary:
+      type: object
+      required: [id, title, description, thumbnailURL, genre, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        title: { type: string }
+        description: { type: string }
+        thumbnailURL: { type: string, format: uri }
+        genre:
+          type: array
+          items: { $ref: "#/components/schemas/GenreRef" }
+        updatedAt: { type: string, format: date-time }
+
+    SearchProgramResult:
+      type: object
+      required: [id, title, description, thumbnailURL, genre, matchedBy, episodes]
+      properties:
+        id: { type: string, format: uuid }
+        title: { type: string }
+        description: { type: string }
+        thumbnailURL: { type: string, format: uri }
+        genre:
+          type: array
+          items: { $ref: "#/components/schemas/GenreRef" }
+        matchedBy: { type: string, enum: [program, episode] }
+        episodes:
+          type: array
+          items: { $ref: "#/components/schemas/EpisodeSummary" }
+
+    CreateProgramRequest:
+      type: object
+      required: [title, description, genreIDs, thumbnailURL, season]
+      properties:
+        title: { type: string, maxLength: 200 }
+        description: { type: string, maxLength: 5000 }
+        genreIDs:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: { type: string, format: uuid }
+        thumbnailURL: { type: string, format: uri }
+        season:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            required: [number, title, description, episodes]
+            properties:
+              number: { type: integer, minimum: 1 }
+              title: { type: string, maxLength: 200 }
+              description: { type: string, maxLength: 5000 }
+              episodes:
+                type: array
+                minItems: 1
+                items:
+                  type: object
+                  required: [number, title, description, publishedAt, streams]
+                  properties:
+                    number: { type: integer, minimum: 1 }
+                    title: { type: string, minLength: 1, maxLength: 200 }
+                    description: { type: string, maxLength: 5000 }
+                    durationSec:
+                      type: integer
+                      description: Optional — the default angle's validated upload duration is authoritative.
+                    thumbnailURL: { type: string, format: uri, maxLength: 2048 }
+                    publishedAt: { type: string, format: date-time }
+                    streams:
+                      type: array
+                      minItems: 1
+                      maxItems: 8
+                      description: Camera angles in presentation order; one upload per angle. Index 0 is the default angle.
+                      items:
+                        type: object
+                        required: [name, uploadID]
+                        properties:
+                          name: { type: string, minLength: 1, maxLength: 50 }
+                          uploadID: { type: string, format: uuid }
+      example:
+        title: Neon Nights — Immersive Live
+        description: An immersive concert series captured in 8K stereoscopic MV-HEVC.
+        genreIDs: [01890a5d-ac96-774b-b111-000000000001]
+        thumbnailURL: https://media.3rd-place.example/thumbs/neon-nights.jpg
+        season:
+          - number: 1
+            title: World Tour 2026
+            description: Six nights across three cities.
+            episodes:
+              - number: 1
+                title: Opening Night — Tokyo
+                description: The first night of the tour, captured from the front row.
+                publishedAt: "2026-07-01T12:00:00Z"
+                streams:
+                  - { name: Main, uploadID: 01890a5d-ac96-774b-b111-000000000801 }
+                  - { name: Side, uploadID: 01890a5d-ac96-774b-b111-000000000807 }
+
+    UpdateProgramRequest:
+      type: object
+      description: Partial update — omitted/null fields are untouched.
+      properties:
+        title: { type: [string, "null"], maxLength: 200 }
+        description: { type: [string, "null"], maxLength: 5000 }
+        genreIDs:
+          type: [array, "null"]
+          minItems: 1
+          uniqueItems: true
+          items: { type: string, format: uuid }
+        thumbnailURL: { type: [string, "null"], format: uri }
+        episodes:
+          type: array
+          items:
+            type: object
+            required: [episodeID]
+            properties:
+              episodeID: { type: string, format: uuid }
+              title: { type: [string, "null"], minLength: 1, maxLength: 200 }
+              description: { type: [string, "null"], maxLength: 5000 }
+              thumbnailURL: { type: [string, "null"], format: uri, maxLength: 2048 }
+              publishedAt: { type: [string, "null"], format: date-time }
+              streams:
+                type: [array, "null"]
+                minItems: 1
+                maxItems: 8
+                description: When provided, REPLACES the episode's full angle set. Null/omitted = untouched.
+                items:
+                  type: object
+                  required: [name, uploadID]
+                  properties:
+                    name: { type: string, minLength: 1, maxLength: 50 }
+                    uploadID: { type: string, format: uuid }
+      example:
+        title: "Neon Nights — Immersive Live (Remastered)"
+
+    DeleteResult:
+      type: object
+      required: [targetType, programID, episodeID, deleted, deletedAt]
+      properties:
+        targetType: { type: string, enum: [program, episode] }
+        programID: { type: string, format: uuid }
+        episodeID: { type: [string, "null"], format: uuid }
+        deleted: { type: boolean }
+        deletedAt: { type: string, format: date-time }
+
+    Upload:
+      type: object
+      required: [uploadID, status, playlistURL, durationSec, error]
+      properties:
+        uploadID: { type: string, format: uuid }
+        status:
+          type: string
+          enum: [uploading, queued, processing, ready, failed]
+        playlistURL:
+          type: [string, "null"]
+          format: uri
+          description: |
+            Unsigned master playlist URL on the public media origin
+            (`{MEDIA_BASE_URL}/uploads/{uploadID}/index.m3u8`) — populated when
+            status is `ready`. For playback use the tokenised `streams[].streamURL`.
+        durationSec: { type: [integer, "null"] }
+        error:
+          type: [string, "null"]
+          description: |
+            Failure reason when status is `failed`, formatted `code: detail`.
+
+            Archive codes: `checksum_mismatch`, `size_mismatch`, `invalid_archive`,
+            `entry_size_mismatch`, `unsafe_path`, `symlink`, `duplicate_entry`,
+            `disallowed_extension`, `too_many_files`, `too_large`, `empty_archive`,
+            `missing_master_playlist`, `multiple_master_playlists`,
+            `nested_master_playlist`.
+
+            Playlist codes: `invalid_master_playlist`, `missing_reference`,
+            `empty_playlist`, `rendition_duration_mismatch`.
+
+            Subtitle codes: `subtitle_language_missing`, `subtitle_language_invalid`,
+            `subtitle_language_duplicate`, `subtitle_directory_mismatch`,
+            `subtitle_cue_positioning`, `invalid_subtitle`.
+
+            Infrastructure codes (start a new upload once the cause is fixed):
+            `extraction_error`, `stuck_processing`, `no_worker`.
+
+            Janitor codes (spec §8.5; the upload's media has been removed):
+            `abandoned` (never completed within 7 days), `reclaimed` (ready but
+            not attached within 14 days, or detached from a deleted episode for 30 days).
+
+  examples:
+    ProgramFull:
+      summary: Full program with 2 seasons / 6 episodes (canonical fixture)
+      value:
+        id: 01890a5d-ac96-774b-b111-000000000101
+        title: Neon Nights — Immersive Live
+        description: An immersive concert series captured in 8K stereoscopic MV-HEVC.
+        thumbnailURL: https://media.3rd-place.example/thumbs/neon-nights.jpg
+        genre: [{ id: 01890a5d-ac96-774b-b111-000000000001, name: Music }]
+        createdAt: "2026-06-01T09:00:00Z"
+        updatedAt: "2026-08-01T10:00:00Z"
+        viewCount: 1284
+        owner:
+          did: did:tplace:01890a5d-ac96-774b-b111-00000000a002
+          handle: third-place-official
+          displayName: Third Place
+          avatarURL: https://media.3rd-place.example/thumbs/avatar-tp.png
+        viewer: { isFollowing: false, isFavorited: false }
+        season:
+          - id: 01890a5d-ac96-774b-b111-000000000201
+            number: 1
+            title: World Tour 2026
+            description: Six nights across three cities.
+            episodes:
+              - id: 01890a5d-ac96-774b-b111-000000000301
+                number: 1
+                title: Opening Night — Tokyo
+                description: The first night of the tour, captured from the front row.
+                durationSec: 5400
+                thumbnailURL: https://media.3rd-place.example/thumbs/ep-s01e01.jpg
+                streams:
+                  - name: Main
+                    uploadID: 01890a5d-ac96-774b-b111-000000000801
+                    streamURL: https://media.3rd-place.example/uploads/01890a5d-ac96-774b-b111-000000000801/index.m3u8?token=v1.tok301m
+                  - name: Side
+                    uploadID: 01890a5d-ac96-774b-b111-000000000807
+                    streamURL: https://media.3rd-place.example/uploads/01890a5d-ac96-774b-b111-000000000807/index.m3u8?token=v1.tok301s
+                publishedAt: "2026-07-01T12:00:00Z"
+              - id: 01890a5d-ac96-774b-b111-000000000302
+                number: 2
+                title: Second Night — Tokyo
+                description: Deeper cuts and an acoustic interlude.
+                durationSec: 5820
+                thumbnailURL: https://media.3rd-place.example/thumbs/ep-s01e02.jpg
+                streams:
+                  - name: Main
+                    uploadID: 01890a5d-ac96-774b-b111-000000000802
+                    streamURL: https://media.3rd-place.example/uploads/01890a5d-ac96-774b-b111-000000000802/index.m3u8?token=v1.tok302m
+                publishedAt: "2026-07-08T12:00:00Z"
+              - id: 01890a5d-ac96-774b-b111-000000000303
+                number: 3
+                title: Osaka Underground
+                description: A club-scale show with the crowd inches away.
+                durationSec: 4980
+                thumbnailURL: https://media.3rd-place.example/thumbs/ep-s01e03.jpg
+                streams:
+                  - name: Main
+                    uploadID: 01890a5d-ac96-774b-b111-000000000803
+                    streamURL: https://media.3rd-place.example/uploads/01890a5d-ac96-774b-b111-000000000803/index.m3u8?token=v1.tok303m
+                publishedAt: "2026-07-15T12:00:00Z"
+          - id: 01890a5d-ac96-774b-b111-000000000202
+            number: 2
+            title: Studio Sessions
+            description: Intimate studio performances in spatial audio.
+            episodes:
+              - id: 01890a5d-ac96-774b-b111-000000000304
+                number: 1
+                title: "Session 001: Daybreak"
+                description: Sunrise session with strings.
+                durationSec: 2700
+                thumbnailURL: https://media.3rd-place.example/thumbs/ep-s02e01.jpg
+                streams:
+                  - name: Main
+                    uploadID: 01890a5d-ac96-774b-b111-000000000804
+                    streamURL: https://media.3rd-place.example/uploads/01890a5d-ac96-774b-b111-000000000804/index.m3u8?token=v1.tok304m
+                publishedAt: "2026-07-22T12:00:00Z"
+              - id: 01890a5d-ac96-774b-b111-000000000305
+                number: 2
+                title: "Session 002: Midnight"
+                description: Late-night electronic set.
+                durationSec: 3120
+                thumbnailURL: https://media.3rd-place.example/thumbs/ep-s02e02.jpg
+                streams:
+                  - name: Main
+                    uploadID: 01890a5d-ac96-774b-b111-000000000805
+                    streamURL: https://media.3rd-place.example/uploads/01890a5d-ac96-774b-b111-000000000805/index.m3u8?token=v1.tok305m
+                publishedAt: "2026-07-29T12:00:00Z"
+              - id: 01890a5d-ac96-774b-b111-000000000306
+                number: 3
+                title: "Session 003: Encore"
+                description: Requests from fans, performed live.
+                durationSec: 2880
+                thumbnailURL: https://media.3rd-place.example/thumbs/ep-s02e03.jpg
+                streams:
+                  - name: Main
+                    uploadID: 01890a5d-ac96-774b-b111-000000000806
+                    streamURL: https://media.3rd-place.example/uploads/01890a5d-ac96-774b-b111-000000000806/index.m3u8?token=v1.tok306m
+                publishedAt: "2026-08-01T10:00:00Z"

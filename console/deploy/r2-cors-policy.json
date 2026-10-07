@@ -1,0 +1,9 @@
+[
+  {
+    "AllowedOrigins": ["https://console.example.com", "http://127.0.0.1:5173"],
+    "AllowedMethods": ["PUT"],
+    "AllowedHeaders": ["Content-Type", "Content-Length"],
+    "ExposeHeaders": ["ETag"],
+    "MaxAgeSeconds": 3600
+  }
+]
